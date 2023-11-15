@@ -52,9 +52,6 @@ WORKDIR /home/user/
 RUN sh -c "$(wget -O- https://raw.githubusercontent.com/deluan/zsh-in-docker/master/zsh-in-docker.sh)"
 RUN export LLVM_CONFIG=llvm-config-14
 
-RUN pip install inotify psutil
-
-
 ENV AFL_NO_AFFINITY=1
 ENV AFL_DISABLE_TRIM=1
 ENV AFL_FAST_CAL=1
