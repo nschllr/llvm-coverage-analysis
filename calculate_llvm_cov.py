@@ -22,11 +22,12 @@ from pathlib import Path
 import subprocess
 import shutil
 import concurrent.futures
+import concurrent.futures.thread
 import tempfile
 from typing import Any, Dict, List, Optional, Sequence
+import re
 
 CONTAINER_NAME = "llvm_cov_analysis"
-base_dir : Path = Path()
 skip_raw = False
 mode = ""
 
@@ -59,13 +60,25 @@ def get_starttime(fuzzer_stats_path : Path) -> str:
     return ""
 
 
-def copy_corpus(working_args) -> None:
+def get_all_fuzzer(working_args, regex="[a-z]*", cstrip = ""):
+    corpus_base_path = working_args["corpus_path"]
+    mode = working_args["mode"]
+
+    all_fuzzers : list[Path] = list(corpus_base_path.iterdir())
+    print(list(fuzzer_entry.name for fuzzer_entry in all_fuzzers))
+    
+    fuzzer_names : set = set(match.group(0).strip(cstrip) for fuzzer_entry in all_fuzzers if (match := re.search(regex, fuzzer_entry.name)) is not None)
+
+    return fuzzer_names
+
+
+def copy_corpus(working_args, base_dir : Path, fuzzer_name: str) -> None:
     
     corpus_base_path = working_args["corpus_path"]
     mode = working_args["mode"]
 
-    # local trials
-    trial_paths : list[Path] = list(corpus_base_path.glob(f"{mode}_*"))
+    trial_paths : list[Path] = list(corpus_base_path.glob(f"*{fuzzer_name}*"))
+
     if len(trial_paths) == 0:
         # fuzzbench trials
         print("Found fuzzbench trials")
@@ -129,8 +142,8 @@ def calculate_cov_branches(json_data):
     traverse(json_data, add_st)
     return len(st)
 
-def llvm_cov(working_args, trial: str) -> None:
-    mode = working_args["mode"]
+def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl") -> None:
+
     trial = f"trial_{trial}"
     full_corpus : Path = base_dir / "tmp" / "full_corpus"
     profraw_dir : Path = base_dir / "profraw_files" / trial
@@ -141,11 +154,11 @@ def llvm_cov(working_args, trial: str) -> None:
     print("Starting llvm coverage analysis")
 
     testcases_to_starttime: list[tuple] = []
-    if mode == "afl":
+    if fuzzer_mode == "afl":
         testcases: list[Path] = get_testcases(full_corpus / trial / "default" / "queue")
         starttime: str = get_starttime(full_corpus / trial / "default" / "fuzzer_stats")
         testcases_to_starttime = list(zip([starttime] * len(testcases), testcases))
-    elif mode == "sileo":
+    elif fuzzer_mode == "sileo":
         runs = list((full_corpus / trial).iterdir())
         run_to_startime: dict[str,str] = {}
         testcases = []
@@ -282,7 +295,7 @@ def get_branches_covered(json_data) -> int:
     return int(json_data["data"][0]["totals"]["branches"]["covered"])
 
 
-def get_results():
+def get_results(base_dir):
     import statistics
 
     print(f"Get results: {base_dir.name}")
@@ -321,7 +334,7 @@ def get_a_clean_dir(dir_path : Path):
     dir_path.mkdir(parents=True)
     return dir_path
 
-def create_directory_structure(mode : str):
+def create_directory_structure(base_dir: Path):
 
     tmp_dir : Path = base_dir / "tmp"
     tmp_corpus_dir : Path  = tmp_dir  / "full_corpus"
@@ -348,7 +361,7 @@ def gen_arguments(args : Namespace) -> dict[str,Any]:
         cov_bin_path : Path = args.cov_bin
         
     trials : int = args.trials
-    target_name : str = args.target_name
+    target_name : str = args.target
 
     return {"mode" : mode, "corpus_path": corpus_path, "cov_bin": cov_bin_path, "trials" : trials, "target_name": target_name, "target_args": args.target_args}
 
@@ -400,16 +413,15 @@ def calc_percentile(mode):
             ts_relative += 1
         
         # fill the array with the last branch value
-        while ts_relative < 86400:
-            ts_relative += 1
-            ts_list.append(ts_relative)
-            branches_covered_list.append(branches_covered_list[-1])
-
-        # fill the array with the last branch value
-        while ts_relative > 86400:
-            ts_relative -= 1
-            ts_list.pop()
-            branches_covered_list.pop()
+        while ts_relative < 86400 or ts_relative > 86400:
+            if ts_relative < 86400:
+                ts_relative += 1
+                ts_list.append(ts_relative)
+                branches_covered_list.append(branches_covered_list[-1])
+            else:
+                ts_relative -= 1
+                ts_list.pop()
+                branches_covered_list.pop()
 
         trial_results_branches.append(branches_covered_list)
         trial_results_ts.append(ts_list)
@@ -463,60 +475,94 @@ def plot_coverage_to_time(_mode):
 def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser: ArgumentParser = ArgumentParser(description="Controller for AFL++ restarting instances")
     
-    parser.add_argument("--corpus", "-c", type=Path, default=None, help="Path to corpus base")
-    parser.add_argument("--trials", "-n", type=int, default=10, help="Number of trials")
-    parser.add_argument("--target_name", "-t", type=str, default="objdump", help="Target name")
-    parser.add_argument("--cov_bin", "-b", type=Path, default=None, help="Path to llvm compiled coverage binary")
-    parser.add_argument("--mode", "-m", type=str, default="afl", help="Set mode sileo | afl")
-    parser.add_argument("--target_args", type=str, help="Target arguments, use quotes")
+    parser.add_argument("--corpus", type=Path, default=None, help="Path to corpus base")
+    parser.add_argument("--trials", type=int, default=10, help="Number of trials")
+    parser.add_argument("--target", type=str, default="objdump", help="Target name")
+    parser.add_argument("--cov_bin", type=Path, default=None, help="Path to llvm compiled coverage binary")
+    parser.add_argument("--mode", type=str, default="afl", help="Set mode sileo | afl")
+    parser.add_argument("--target_args", type=str, default="", help="Target arguments, use quotes")
     parser.add_argument("--calc", action="store_true", default=False, help="Calculate coverage")
     parser.add_argument("--res", action="store_true", default=False, help="Print results of mode")
     parser.add_argument("--plot", action="store_true", default=False, help="Plot results of mode")
     parser.add_argument("--skip", action="store_true", default=False, help="Skip raw processing")
-
+    parser.add_argument("--regex", type=str, default="", help="Regex to get specific filename identifier: e.g.\n\t\tdirectory: afl_0 afl_1 ...\n\t\tregex: afl_[0-9]*")
+    parser.add_argument("--strip", type=str, default="", help="Strip the resulting fuzzer names by given character")
+    parser.add_argument("--threads", type=int, default=80, help="Maximum number of threads")
     
     return parser.parse_args(raw_args)
 
-def process_trial(trial, working_args):
-    print(f"Processing trial: {trial}")
-    llvm_cov(working_args, str(trial))
+
+def process_trial(trial, working_args, base_dir):
+    print(f"Processing trial: {trial} on base dir:{base_dir}")
+    import time
+
+    llvm_cov(working_args, str(trial), base_dir)
+
 
 def main(raw_args: Optional[Sequence[str]] = None):
-    global base_dir, skip_raw, mode
+    global skip_raw, mode
+    
+
     args: Namespace = parse_arguments(raw_args)
+
 
     working_args: dict = gen_arguments(args)
     mode = working_args["mode"]
-    base_dir = Path("coverage_analysis") / working_args["mode"]
-
     skip_raw = args.skip
-    print("test")
+    
+    # [0-9]\.[0-9]*c
+
+    fuzzer_info = []
 
     if args.calc:
         if not skip_raw:
-            create_directory_structure(working_args["mode"])
-            copy_corpus(working_args)
+            fuzzer_names = get_all_fuzzer(working_args,regex=args.regex, cstrip=args.strip)
+            print("found the following fuzzers")
+            print(fuzzer_names)
 
-        num_trials = working_args["trials"]
-        #process_trial(0, working_args)
-        with concurrent.futures.ProcessPoolExecutor() as executor: 
-            futures = [executor.submit(process_trial, trial, working_args) for trial in range(num_trials)]
-            concurrent.futures.wait(futures)
+            num_trials = working_args["trials"]
+            all_jobs = []
+
+            for fuzzer_name in fuzzer_names:
+                print(fuzzer_name)
+                base_dir = Path("coverage_analysis") / fuzzer_name
+                create_directory_structure(base_dir)
+                copy_corpus(working_args, base_dir, fuzzer_name)
+                fuzzer_info.append(base_dir)
+                all_jobs.extend(list(zip([base_dir] * num_trials, range(num_trials))))
+
+            total_runs = len(fuzzer_names) * num_trials
+            num_parallel_fuzzers = args.threads // num_trials
+
+            print(f"Number of parallel fuzzers: {num_parallel_fuzzers}")
+
+            # process fuzzers batch wise if there are to many trials and fuzzers
+            #process_trial(0, working_args)
+            futures = {}
+
+            with concurrent.futures.ProcessPoolExecutor(max_workers=args.threads) as executor:
+                try:
+                    futures = {executor.submit(process_trial, trial, working_args, base_dir) for base_dir, trial in all_jobs}
+                    concurrent.futures.wait(futures)
+                except KeyboardInterrupt:
+                    print("Stopping processes...")
+                    executor.shutdown(wait=False, cancel_futures=True)
+
+
+
 
         print("All trials processed.")
     
     if args.res:
         if working_args["mode"] == "all":
             base_dir = Path("coverage_analysis") / "afl"
-            get_results()
+            get_results(base_dir)
             print("------------------------------------")
             base_dir = Path("coverage_analysis") / "sileo"
-            get_results()
+            get_results(base_dir)
 
     if args.plot:
         plot_coverage_to_time(args.mode)
-
-
 
 
 if __name__ == "__main__":
