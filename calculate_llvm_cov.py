@@ -45,7 +45,7 @@ def get_starttime(fuzzer_stats_path : Path) -> str:
         for line in lines:
             if "start_time" in line:
                 starttime: str = line.split(":")[1].strip()
-                print(f"starttime: {starttime}")
+                #print(f"starttime: {starttime}")
                 return starttime      
     
     print("No or empty fuzzer_stats, using start_time.txt!")
@@ -89,19 +89,38 @@ def copy_corpus(working_args, base_dir : Path, fuzzer_name: str) -> None:
         (base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}").mkdir()
         (base_dir / "profraw_files" / f"trial_{trial_id}").mkdir(exist_ok=True, parents=True)
         (base_dir / "profdata_files" / f"trial_{trial_id}").mkdir(exist_ok=True, parents=True)
+        
+        queue_path : Path = Path()
+        dest_path = Path(base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}" / "default")
 
         if mode == "afl":
             print(trial_path)
-            queue_path : Path = trial_path / "default"
-            if not queue_path.exists: 
-                queue_path : Path = list(trial_path.glob("*/default/"))[0] 
-            shutil.copytree(queue_path, base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}" / "default")
-        elif mode == "sileo":
+            if Path(trial_path / "default").exists(): 
+                queue_path = trial_path / "default"
+            elif Path(trial_path / "queue").exists():
+                queue_path = trial_path
+            else: 
+                queue_paths = list(trial_path.glob("**/queue/"))
+                if len(queue_paths) > 1:
+                    print(f"found more than 1 queue - assuming mode sileo!")
+                    mode = "sileo"
+                else:
+                    queue_path = queue_paths[0].parent
+
+            #queue_path = list(trial_path.glob("*/default/"))[0] 
+        if mode == "sileo":
+            print("in sileo mode")
             print(trial_path)
             run_paths : list[Path] = list(trial_path.glob(f"**/run_*"))
             for run in run_paths:
+                dest_path = Path(base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}" / run.name)
                 if run.is_dir():
-                    shutil.copytree(run, base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}" / run.name)
+                    shutil.copytree(run, dest_path)
+            mode = "afl"
+            continue
+        
+        print(f"Queue path: {queue_path}")
+        shutil.copytree(queue_path, dest_path)
 
 
 def extract_timestamp(file_path : Path) -> int:
@@ -142,7 +161,7 @@ def calculate_cov_branches(json_data):
     traverse(json_data, add_st)
     return len(st)
 
-def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl") -> None:
+def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl") -> bool:
 
     trial = f"trial_{trial}"
     full_corpus : Path = base_dir / "tmp" / "full_corpus"
@@ -154,11 +173,23 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
     print("Starting llvm coverage analysis")
 
     testcases_to_starttime: list[tuple] = []
+    starttime = ""
+    testcases = []
     if fuzzer_mode == "afl":
-        testcases: list[Path] = get_testcases(full_corpus / trial / "default" / "queue")
-        starttime: str = get_starttime(full_corpus / trial / "default" / "fuzzer_stats")
-        testcases_to_starttime = list(zip([starttime] * len(testcases), testcases))
-    elif fuzzer_mode == "sileo":
+        if Path(full_corpus / trial / "default" / "queue").exists():
+            testcases: list[Path] = get_testcases(full_corpus / trial / "default" / "queue")
+            starttime: str = get_starttime(full_corpus / trial / "default" / "fuzzer_stats")
+        elif Path(full_corpus / trial / "queue").exists():
+            testcases: list[Path] = get_testcases(full_corpus / trial / "queue")
+            starttime: str = get_starttime(full_corpus / trial / "fuzzer_stats")
+        else:
+            print("Something went wrong, no queue directory found - testing sileo")
+            fuzzer_mode = "sileo"
+        
+        if starttime != "":
+            testcases_to_starttime = list(zip([starttime] * len(testcases), testcases))
+    
+    if fuzzer_mode == "sileo":
         runs = list((full_corpus / trial).iterdir())
         run_to_startime: dict[str,str] = {}
         testcases = []
@@ -248,6 +279,8 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
     # cleanup to save space
     clean_up(profraw_dir)
     clean_up(full_corpus)
+
+    return True
 
 
 def merge_by_minute_single(files : list[Path], minute, trial):
@@ -494,9 +527,7 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
 
 def process_trial(trial, working_args, base_dir):
     print(f"Processing trial: {trial} on base dir:{base_dir}")
-    import time
-
-    llvm_cov(working_args, str(trial), base_dir)
+    return llvm_cov(working_args, str(trial), base_dir)
 
 
 def main(raw_args: Optional[Sequence[str]] = None):
@@ -536,20 +567,17 @@ def main(raw_args: Optional[Sequence[str]] = None):
 
             print(f"Number of parallel fuzzers: {num_parallel_fuzzers}")
 
-            # process fuzzers batch wise if there are to many trials and fuzzers
-            #process_trial(0, working_args)
+            #for base_dir, trial in all_jobs:
+            #    process_trial(0, working_args, base_dir)
+            
             futures = {}
-
             with concurrent.futures.ProcessPoolExecutor(max_workers=args.threads) as executor:
                 try:
                     futures = {executor.submit(process_trial, trial, working_args, base_dir) for base_dir, trial in all_jobs}
-                    concurrent.futures.wait(futures)
+                    concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
                 except KeyboardInterrupt:
                     print("Stopping processes...")
                     executor.shutdown(wait=False, cancel_futures=True)
-
-
-
 
         print("All trials processed.")
     
