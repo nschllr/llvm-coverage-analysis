@@ -511,7 +511,7 @@ def random_rgb_color():
 def color_difference(color1, color2):
     return sum((c1 - c2) ** 2 for c1, c2 in zip(color1, color2))
 
-def is_color_different(color, used_colors, threshold=0.2):
+def is_color_different(color, used_colors, threshold=0.5):
     for used_color in used_colors:
         if color_difference(color, used_color) < threshold:
             return False
@@ -525,13 +525,13 @@ def plot_while_calc(regex = "[0-9].[0-9]*c"):
         Path("plots").mkdir()
 
     all_ts_data_paths: list[Path] = sorted(list(base_dir.glob("./**/timestamp_to_b_covered.txt")))
-    print(f"data paths: {all_ts_data_paths}")
+    #print(f"data paths: {all_ts_data_paths}")
     fuzzer_names = set()
     for ts_data_path in all_ts_data_paths:
         name_match = re.search("[0-9].[0-9]*c", ts_data_path.as_posix())
         # print(f"name match: {name_match}")
         if name_match != None:
-            if name_match in fuzzer_names:
+            if name_match.group(0) in fuzzer_names:
                 continue
             else:
                 fuzzer_name = name_match.group(0)
@@ -552,7 +552,8 @@ def plot_while_calc(regex = "[0-9].[0-9]*c"):
         fuzzer_color = random_rgb_color()
 
         # Check if the color is sufficiently different from used colors
-        while not is_color_different(fuzzer_color, used_colors, threshold=0.2):
+        while not is_color_different(fuzzer_color, used_colors, threshold=0.5):
+            print("coloring")
             fuzzer_color = random_rgb_color()
 
         for ts_to_branch_file in all_trial_paths:
@@ -598,7 +599,7 @@ def plot_while_calc(regex = "[0-9].[0-9]*c"):
     plt.xlabel("Time (s)")
     plt.ylabel("Number of branches covered")
     plt.show()
-    plt.savefig(f"plots/all.png")
+    plt.savefig(f"plots/all.png",dpi=150)
     
 
 def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
