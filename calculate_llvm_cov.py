@@ -30,7 +30,7 @@ import re
 import time
 import matplotlib.pyplot as plt
 import numpy as np
-
+import subprocess
 
 CONTAINER_NAME = "llvm_cov_analysis"
 skip_raw = False
@@ -120,12 +120,14 @@ def copy_corpus(working_args, base_dir : Path, fuzzer_name: str) -> None:
             for run in run_paths:
                 dest_path = Path(base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}" / run.name)
                 if run.is_dir():
-                    shutil.copytree(run, dest_path)
+                    #shutil.copytree(run, dest_path)
+                    subprocess.call(["rsync", "-a", run, dest_path])
             mode = "afl"
             continue
         
         print(f"Queue path: {queue_path}")
-        shutil.copytree(queue_path, dest_path)
+        #shutil.copytree(queue_path, dest_path)
+        subprocess.call(["rsync", "-a", queue_path, dest_path])
 
 
 def extract_timestamp(file_path : Path) -> int:
@@ -271,6 +273,9 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
         with open(f"{profdata_dir}/timestamp_to_b_covered.txt","a") as fd:
                 fd.write(f"{timestamp},{branch_count}\n")
 
+        with open(f"{profdata_dir}/report_{timestamp}.json","a") as fd:
+                fd.write(report_data)
+
         if len(res.stderr) > 0:
             print(f"Seems an error occured, see {profdata_dir}/llvm-cov.stderr for more information")
             with open(f"{profdata_dir}/llvm-cov.stderr", "wb") as fd:
@@ -365,9 +370,9 @@ def get_results(base_dir):
     print(f"Branch coverage median (percent): {statistics.median(b_perc)}%")
     print(f"Function coverage median: {statistics.median(f_perc)}%")
 
-def get_a_clean_dir(dir_path : Path):
+def get_a_clean_dir(dir_path : Path, remove: bool = True):
     print(f"Init directory structure: {dir_path}")
-    if dir_path.exists():
+    if dir_path.exists() and remove:
         shutil.rmtree(dir_path)
     dir_path.mkdir(parents=True)
     return dir_path
@@ -378,7 +383,7 @@ def create_directory_structure(base_dir: Path):
     tmp_corpus_dir : Path  = tmp_dir  / "full_corpus"
     profraw_dir = base_dir / "profraw_files"
 
-    get_a_clean_dir(tmp_dir)
+    get_a_clean_dir(tmp_dir, remove=False)
     get_a_clean_dir(profraw_dir)
     get_a_clean_dir(tmp_corpus_dir)
 
@@ -556,7 +561,7 @@ def plot_while_calc(stop_event, interval = 0, fuzzer_names = set()):
         #print(f"data paths: {all_ts_data_paths}")
         fuzzer_names = set()
         for ts_data_path in all_ts_data_paths:
-            name_match = re.search("[0-9].[0-9]*c", ts_data_path.as_posix())
+            name_match = re.search("afl", ts_data_path.as_posix())
             print(f"name match: {name_match}")
             if name_match != None:
                 if name_match.group(0) in fuzzer_names:
@@ -620,13 +625,14 @@ def plot_while_calc(stop_event, interval = 0, fuzzer_names = set()):
         # Add a legend for each unique color
         handles, labels = plt.gca().get_legend_handles_labels()
         by_label = dict(zip(labels, handles))
-        plt.legend(by_label.values(), by_label.keys())
+        plt.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 6})
 
         plt.xlabel("Time (s)")
         plt.ylabel("Number of branches covered")
         plt.show()
         plt.savefig(f"plots/all.png",dpi=150)
         plt.savefig(f"plots/incremental/{img_cnt}.png",dpi=150)
+        img_cnt += 1
 
         
         if interval == 0:
@@ -732,7 +738,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
             #    process_trial(0, working_args, base_dir)
 
             main_args = (args.threads, working_args, all_jobs)
-            run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, plot_while_calc, fuzzer_names, main_args, interval_seconds=300)
+            run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, plot_while_calc, fuzzer_names, main_args, interval_seconds=150)
             
         print("All trials processed.")
     
