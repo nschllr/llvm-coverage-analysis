@@ -508,24 +508,27 @@ def plot_coverage_to_time(_mode):
 def random_rgb_color():
     return tuple(np.random.rand(3,))
 
-def plot_while_calc():
+def plot_while_calc(regex = "[0-9].[0-9]*c"):
     base_dir = Path("coverage_analysis") 
 
     if not Path("plots").exists():
         Path("plots").mkdir()
 
     all_ts_data_paths: list[Path] = sorted(list(base_dir.glob("./**/timestamp_to_b_covered.txt")))
-    print(f"data paths: {all_ts_data_paths}")
+    #print(f"data paths: {all_ts_data_paths}")
+    fuzzer_names = set()
     for ts_data_path in all_ts_data_paths:
-        name_match = re.search("-[0-9].[0-9]*c-", ts_data_path.as_posix())
-        print(f"name match: {name_match}")
+        name_match = re.search(regex, ts_data_path.as_posix())
+        #print(f"name match: {name_match}")
         if name_match != None:
             fuzzer_name = name_match.group(0)
+            fuzzer_names.update(fuzzer_name)
             print(f"found stats for {fuzzer_name}")
         else:
             fuzzer_name = ""
             continue
 
+    for fuzzer_name in fuzzer_names:
         # all trial paths of fuzzer with name...
         # coverage_analysis_old/afl/profdata_files/trial_0/timestamp_to_b_covered.txt
         all_trial_paths = sorted(list(base_dir.glob(f"./{fuzzer_name}/profdata_files/*/timestamp_to_b_covered.txt")))
@@ -536,7 +539,6 @@ def plot_while_calc():
                 ts_to_branch = fd.readlines()
             ts_list = []
             branches_covered_list = []
-            starttime = None
             ts_relative = 0
             for i in range(len(ts_to_branch)):
 
@@ -677,7 +679,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
         plot_coverage_to_time(args.mode)
 
     if args.cplot:
-        plot_while_calc()
+        plot_while_calc(args.regex)
 
 
 if __name__ == "__main__":
