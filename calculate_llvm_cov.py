@@ -515,9 +515,10 @@ def plot_while_calc():
         Path("plots").mkdir()
 
     all_ts_data_paths: list[Path] = sorted(list(base_dir.glob("./**/timestamp_to_b_covered.txt")))
-
+    print(f"data paths: {all_ts_data_paths}")
     for ts_data_path in all_ts_data_paths:
         name_match = re.search("-[0-9].[0-9]*c-", ts_data_path.as_posix())
+        print(f"name match: {name_match}")
         if name_match != None:
             fuzzer_name = name_match.group(0)
             print(f"found stats for {fuzzer_name}")
