@@ -12,7 +12,6 @@
 #
 
 
-
 from argparse import ArgumentParser, Namespace
 from collections import defaultdict
 from datetime import datetime
@@ -399,7 +398,7 @@ def gen_arguments(args : Namespace) -> dict[str,Any]:
     return {"mode" : mode, "corpus_path": corpus_path, "cov_bin": cov_bin_path, "trials" : trials, "target_name": target_name, "target_args": args.target_args}
 
 
-def calc_percentile(mode):
+def calc_percentile(mode, skip_fill = False):
     import numpy as np
 
     base_dir = Path("coverage_analysis") / mode
@@ -407,8 +406,8 @@ def calc_percentile(mode):
 
     profdata_dir : Path = base_dir / "profdata_files"
     trials : list[Path] = list(profdata_dir.iterdir())
-    trial_results_branches = []
-    trial_results_ts = []
+    trial_results_branches: list[list] = []
+    trial_results_ts: list[list] = []
     for trial in trials:
         print(f"processing: {trial.name}")
         ts_to_branch_file : Path =  profdata_dir / trial.name / "timestamp_to_b_covered.txt"
@@ -445,22 +444,24 @@ def calc_percentile(mode):
                     break
             ts_relative += 1
         
-        # fill the array with the last branch value
-        while ts_relative < 86400 or ts_relative > 86400:
-            if ts_relative < 86400:
-                ts_relative += 1
-                ts_list.append(ts_relative)
-                branches_covered_list.append(branches_covered_list[-1])
-            else:
-                ts_relative -= 1
-                ts_list.pop()
-                branches_covered_list.pop()
+        if not skip_fill:
+            # fill the array with the last branch value
+            while ts_relative < 86400 or ts_relative > 86400:
+                if ts_relative < 86400:
+                    ts_relative += 1
+                    ts_list.append(ts_relative)
+                    branches_covered_list.append(branches_covered_list[-1])
+                else:
+                    ts_relative -= 1
+                    ts_list.pop()
+                    branches_covered_list.pop()
 
         trial_results_branches.append(branches_covered_list)
         trial_results_ts.append(ts_list)
 
     all_trial_branches = []
-    for idx in range(len(trial_results_branches[0])):
+    max_num_entries: int = max([len(x) for x in trial_results_branches])
+    for idx in range(max_num_entries):
         value_series = []
         for trial_idx in range(len(trial_results_branches)):
             value_series.append(trial_results_branches[trial_idx][idx])  
@@ -514,7 +515,7 @@ def is_color_different(color, used_colors, threshold=0.5):
     return True
 
 
-def plot_while_calc(stop_event, interval = 0, fuzzer_names = set()):
+def plot_while_calc(stop_event, interval : int = 0, fuzzer_names = set(), skip_fill = True):
     base_dir = Path("coverage_analysis") 
 
     if not Path("plots").exists():
@@ -536,9 +537,11 @@ def plot_while_calc(stop_event, interval = 0, fuzzer_names = set()):
                 fuzzer_colors.update({fuzzer_name:fuzzer_color})
 
     img_cnt = 0
+    fig, ax = plt.subplots()
     while not stop_event.is_set():
 
         all_ts_data_paths: list[Path] = sorted(list(base_dir.glob("./**/profdata_files/*/timestamp_to_b_covered.txt")))
+        #print(all_ts_data_paths)
         if len(all_ts_data_paths) == 0:
             if interval == 0 or stop_event.is_set():
                 print("no timestamp files found")
@@ -548,29 +551,33 @@ def plot_while_calc(stop_event, interval = 0, fuzzer_names = set()):
                 time.sleep(interval)
                 continue
 
-        #print(f"data paths: {all_ts_data_paths}")
-        fuzzer_names = set()
-        for ts_data_path in all_ts_data_paths:
-            name_match = re.search("[0-9].[0-9]*c", ts_data_path.as_posix())
-            if name_match != None:
-                print(f"name match: {name_match}")
-                if name_match.group(0) in fuzzer_names:
-                    continue
+        # print(f"data paths: {all_ts_data_paths}")
+        # fuzzer_names = set()
+        if len(fuzzer_names) == 0:
+            print(f"extract fuzzer name from path with regex: [0-9].[0-9]*c")
+            for ts_data_path in all_ts_data_paths:
+                name_match = re.search("[0-9].[0-9]*c", ts_data_path.as_posix())
+                if name_match != None:
+                    print(f"name match: {name_match}")
+                    if name_match.group(0) in fuzzer_names:
+                        continue
+                    else:
+                        fuzzer_name = name_match.group(0)
+                        fuzzer_names.add(fuzzer_name)
+                        print(f"found stats for {fuzzer_name}")
                 else:
-                    fuzzer_name = name_match.group(0)
-                    fuzzer_names.add(fuzzer_name)
-                    print(f"found stats for {fuzzer_name}")
-            else:
-                fuzzer_name = ""
-                continue
+                    fuzzer_name = ""
+                    continue
 
-        fig, ax = plt.subplots()
 
 
         for fuzzer_name in fuzzer_names:
             # all trial paths of fuzzer with name...
             # coverage_analysis_old/afl/profdata_files/trial_0/timestamp_to_b_covered.txt
             all_trial_paths = sorted(list(base_dir.glob(f"./{fuzzer_name}/profdata_files/*/timestamp_to_b_covered.txt")))
+
+            trial_results_branches: list[list] = []
+            trial_results_ts: list[list] = []
 
             for ts_to_branch_file in all_trial_paths:
                 ts_to_branch = []
@@ -605,26 +612,66 @@ def plot_while_calc(stop_event, interval = 0, fuzzer_names = set()):
                             break
                     ts_relative += 1
 
-                if fuzzer_name in fuzzer_colors.keys():
-                    fuzzer_color = fuzzer_colors[fuzzer_name]
-                else:
-                    fuzzer_color = random_rgb_color()
+                    if not skip_fill:
+                        # fill the array with the last branch value
+                        while ts_relative < 86400 or ts_relative > 86400:
+                            if ts_relative < 86400:
+                                ts_relative += 1
+                                ts_list.append(ts_relative)
+                                branches_covered_list.append(branches_covered_list[-1])
+                            else:
+                                ts_relative -= 1
+                                ts_list.pop()
+                                branches_covered_list.pop()
 
-                ax.plot(ts_list, branches_covered_list, color=fuzzer_color, alpha = 0.5, label=f"{fuzzer_name}")
+                # if fuzzer_name in fuzzer_colors.keys():
+                #     fuzzer_color = fuzzer_colors[fuzzer_name]
+                # else:
+                #     fuzzer_color = random_rgb_color()
+
+                #ax.plot(ts_list, branches_covered_list, color=fuzzer_color, alpha = 0.5, label=f"{fuzzer_name}")
+
+
+                trial_results_branches.append(branches_covered_list)
+                trial_results_ts.append(ts_list)
+
+            all_trial_branches = []
+            min_num_entries: int = min([len(x) for x in trial_results_branches])
+            for idx in range(min_num_entries):
+                value_series = []
+                for trial_idx in range(len(trial_results_branches)):
+                    value_series.append(trial_results_branches[trial_idx][idx])  
+                all_trial_branches.append(value_series)
+
+            lower = []
+            upper = []
+
+            for values in all_trial_branches:
+                d_interval = sorted(values)[2:8]
+                min_val = d_interval[0]
+                max_val = d_interval[-1]
+                lower.append(min_val)
+                upper.append(max_val)
+            median = np.median(all_trial_branches, axis=1)
+
+            if fuzzer_name in fuzzer_colors.keys():
+                fuzzer_color = fuzzer_colors[fuzzer_name]
+            else:
+                fuzzer_color = random_rgb_color()
+            ax.fill_between(np.arange(len(median)), lower, upper, alpha = 0.2) # type: ignore
+            ax.plot(np.arange(len(median)), median, color=fuzzer_color, alpha = 0.65, label=f"Median-{fuzzer_name}")
 
         # Add a legend for each unique color
         handles, labels = plt.gca().get_legend_handles_labels()
         by_label = dict(zip(labels, handles))
-        plt.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 6})
+        plt.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 4})
 
         plt.xlabel("Time (s)")
         plt.ylabel("Number of branches covered")
-        plt.show()
-        plt.savefig(f"plots/all.png",dpi=150)
-        plt.savefig(f"plots/incremental/{img_cnt}.png",dpi=150)
+        plt.savefig(f"plots/all_median.png",dpi=150)
+        plt.savefig(f"plots/incremental/median_{img_cnt}.png",dpi=150)
         img_cnt += 1
-
-        
+  
         if interval == 0:
             stop_event.set()
             return
@@ -737,7 +784,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
 
     if args.cplot:
         stop_event = threading.Event()
-        plot_while_calc(stop_event)
+        plot_while_calc(stop_event, fuzzer_names={"afl","sileo"})
 
 
 if __name__ == "__main__":
