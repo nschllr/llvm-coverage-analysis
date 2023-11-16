@@ -508,6 +508,16 @@ def plot_coverage_to_time(_mode):
 def random_rgb_color():
     return tuple(np.random.rand(3,))
 
+def color_difference(color1, color2):
+    return sum((c1 - c2) ** 2 for c1, c2 in zip(color1, color2))
+
+def is_color_different(color, used_colors, threshold=0.2):
+    for used_color in used_colors:
+        if color_difference(color, used_color) < threshold:
+            return False
+    return True
+
+
 def plot_while_calc(regex = "[0-9].[0-9]*c"):
     base_dir = Path("coverage_analysis") 
 
@@ -515,24 +525,36 @@ def plot_while_calc(regex = "[0-9].[0-9]*c"):
         Path("plots").mkdir()
 
     all_ts_data_paths: list[Path] = sorted(list(base_dir.glob("./**/timestamp_to_b_covered.txt")))
-    #print(f"data paths: {all_ts_data_paths}")
+    print(f"data paths: {all_ts_data_paths}")
     fuzzer_names = set()
     for ts_data_path in all_ts_data_paths:
-        name_match = re.search(regex, ts_data_path.as_posix())
-        #print(f"name match: {name_match}")
+        name_match = re.search("[0-9].[0-9]*c", ts_data_path.as_posix())
+        # print(f"name match: {name_match}")
         if name_match != None:
-            fuzzer_name = name_match.group(0)
-            fuzzer_names.update(fuzzer_name)
-            print(f"found stats for {fuzzer_name}")
+            if name_match in fuzzer_names:
+                continue
+            else:
+                fuzzer_name = name_match.group(0)
+                fuzzer_names.add(fuzzer_name)
+                print(f"found stats for {fuzzer_name}")
         else:
             fuzzer_name = ""
             continue
+
+    fig, ax = plt.subplots()
+    used_colors = set()
 
     for fuzzer_name in fuzzer_names:
         # all trial paths of fuzzer with name...
         # coverage_analysis_old/afl/profdata_files/trial_0/timestamp_to_b_covered.txt
         all_trial_paths = sorted(list(base_dir.glob(f"./{fuzzer_name}/profdata_files/*/timestamp_to_b_covered.txt")))
+
         fuzzer_color = random_rgb_color()
+
+        # Check if the color is sufficiently different from used colors
+        while not is_color_different(fuzzer_color, used_colors, threshold=0.2):
+            fuzzer_color = random_rgb_color()
+
         for ts_to_branch_file in all_trial_paths:
             ts_to_branch = []
             with open(ts_to_branch_file.as_posix(),"r") as fd:
@@ -566,12 +588,16 @@ def plot_while_calc(regex = "[0-9].[0-9]*c"):
                         break
                 ts_relative += 1
 
-            plt.plot(ts_list, branches_covered_list, color=fuzzer_color, alpha = 0.5, label=f"{fuzzer_name}")
+            ax.plot(ts_list, branches_covered_list, color=fuzzer_color, alpha = 0.5, label=f"{fuzzer_name}")
+
+    # Add a legend for each unique color
+    handles, labels = plt.gca().get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    plt.legend(by_label.values(), by_label.keys())
 
     plt.xlabel("Time (s)")
     plt.ylabel("Number of branches covered")
-    plt.legend()
-
+    plt.show()
     plt.savefig(f"plots/all.png")
     
 
