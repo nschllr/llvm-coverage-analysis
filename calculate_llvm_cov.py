@@ -372,14 +372,11 @@ def create_directory_structure(base_dir: Path, skip_corpus = False):
     tmp_corpus_dir : Path  = tmp_dir  / "full_corpus"
     profraw_dir = base_dir / "profraw_files"
 
-    get_a_clean_dir(profraw_dir)
-
     if skip_corpus and not tmp_corpus_dir.exists():
         print(f"it seems you want to skip the corpus copy, but there is no corpus at {tmp_corpus_dir}")
         exit()
-    if skip_corpus:
-        print("Skipping corpus copy!!\nI hope you know what you are doing and you have the correct corpus here... 5sec to think about")
-        time.sleep(5)
+
+    get_a_clean_dir(profraw_dir)
     get_a_clean_dir(tmp_corpus_dir,  not skip_corpus)
 
 
@@ -749,6 +746,11 @@ def main(raw_args: Optional[Sequence[str]] = None):
     mode = working_args["mode"]
     skip_corpus = args.skip
     fuzzer_info = []
+
+    if skip_corpus:
+        print("Skipping corpus copy!!\nI hope you know what you are doing and you have the correct corpus here... 5sec to think about")
+        time.sleep(5)
+
 
     if args.calc:
 
