@@ -26,6 +26,10 @@ import concurrent.futures.thread
 import tempfile
 from typing import Any, Dict, List, Optional, Sequence
 import re
+import time
+import matplotlib.pyplot as plt
+import numpy as np
+
 
 CONTAINER_NAME = "llvm_cov_analysis"
 skip_raw = False
@@ -94,7 +98,7 @@ def copy_corpus(working_args, base_dir : Path, fuzzer_name: str) -> None:
         dest_path = Path(base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}" / "default")
 
         if mode == "afl":
-            print(trial_path)
+            #print(trial_path)
             if Path(trial_path / "default").exists(): 
                 queue_path = trial_path / "default"
             elif Path(trial_path / "queue").exists():
@@ -109,8 +113,8 @@ def copy_corpus(working_args, base_dir : Path, fuzzer_name: str) -> None:
 
             #queue_path = list(trial_path.glob("*/default/"))[0] 
         if mode == "sileo":
-            print("in sileo mode")
-            print(trial_path)
+            # print("in sileo mode")
+            # print(trial_path)
             run_paths : list[Path] = list(trial_path.glob(f"**/run_*"))
             for run in run_paths:
                 dest_path = Path(base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}" / run.name)
@@ -161,7 +165,7 @@ def calculate_cov_branches(json_data):
     traverse(json_data, add_st)
     return len(st)
 
-def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl") -> bool:
+def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl") -> tuple[bool, Path]:
 
     trial = f"trial_{trial}"
     full_corpus : Path = base_dir / "tmp" / "full_corpus"
@@ -280,7 +284,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
     clean_up(profraw_dir)
     clean_up(full_corpus)
 
-    return True
+    return True, base_dir
 
 
 def merge_by_minute_single(files : list[Path], minute, trial):
@@ -481,10 +485,7 @@ def calc_percentile(mode):
 
 
 def plot_coverage_to_time(_mode):
-
-    import matplotlib.pyplot as plt
-    import numpy as np
-    
+   
     print("plotting data")
     
     if _mode == "all":
@@ -504,6 +505,72 @@ def plot_coverage_to_time(_mode):
     plt.legend()
     plt.savefig(f"zz_plot_{_mode}.png")
 
+def random_rgb_color():
+    return tuple(np.random.rand(3,))
+
+def plot_while_calc():
+    base_dir = Path("coverage_analysis") 
+
+    if not Path("plots").exists():
+        Path("plots").mkdir()
+
+    all_ts_data_paths: list[Path] = sorted(list(base_dir.glob("./**/timestamp_to_b_covered.txt")))
+
+    for ts_data_path in all_ts_data_paths:
+        name_match = re.search("-[0-9].[0-9]*c-", ts_data_path.as_posix())
+        if name_match != None:
+            fuzzer_name = name_match.group(0)
+            print(f"found stats for {fuzzer_name}")
+        else:
+            fuzzer_name = ""
+            continue
+
+        # all trial paths of fuzzer with name...
+        # coverage_analysis_old/afl/profdata_files/trial_0/timestamp_to_b_covered.txt
+        all_trial_paths = sorted(list(base_dir.glob(f"./{fuzzer_name}/profdata_files/*/timestamp_to_b_covered.txt")))
+        fuzzer_color = random_rgb_color()
+        for ts_to_branch_file in all_trial_paths:
+            ts_to_branch = []
+            with open(ts_to_branch_file.as_posix(),"r") as fd:
+                ts_to_branch = fd.readlines()
+            ts_list = []
+            branches_covered_list = []
+            starttime = None
+            ts_relative = 0
+            for i in range(len(ts_to_branch)):
+
+                ts_to_branch_cov = ts_to_branch[i]
+                if i < len(ts_to_branch)-1:
+                    ts_to_branch_cov_next = ts_to_branch[i+1]
+                else:
+                    ts_to_branch_cov_next = ts_to_branch[i]
+
+                ts, branches_covered = ts_to_branch_cov.split(",")
+                ts_next, branches_covered_next = ts_to_branch_cov_next.split(",")
+                ts = int(ts)
+                ts_next = int(ts_next)
+                
+                while True:
+                    if ts + 1 < ts_next:
+                        branches_covered_list.append(int(branches_covered))
+                        ts_list.append(ts_relative)
+                        ts_relative += 1
+                        ts += 1
+                    else:
+                        branches_covered_list.append(int(branches_covered))
+                        ts_list.append(ts_relative)
+                        ts +=1
+                        break
+                ts_relative += 1
+
+            plt.plot(ts_list, branches_covered_list, color=fuzzer_color, alpha = 0.5, label=f"{fuzzer_name}")
+
+    plt.xlabel("Time (s)")
+    plt.ylabel("Number of branches covered")
+    plt.legend()
+
+    plt.savefig(f"plots/all.png")
+    
 
 def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser: ArgumentParser = ArgumentParser(description="Controller for AFL++ restarting instances")
@@ -517,6 +584,7 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--calc", action="store_true", default=False, help="Calculate coverage")
     parser.add_argument("--res", action="store_true", default=False, help="Print results of mode")
     parser.add_argument("--plot", action="store_true", default=False, help="Plot results of mode")
+    parser.add_argument("--cplot", action="store_true", default=False, help="Plot results of mode")
     parser.add_argument("--skip", action="store_true", default=False, help="Skip raw processing")
     parser.add_argument("--regex", type=str, default="", help="Regex to get specific filename identifier: e.g.\n\t\tdirectory: afl_0 afl_1 ...\n\t\tregex: afl_[0-9]*")
     parser.add_argument("--strip", type=str, default="", help="Strip the resulting fuzzer names by given character")
@@ -574,7 +642,22 @@ def main(raw_args: Optional[Sequence[str]] = None):
             with concurrent.futures.ProcessPoolExecutor(max_workers=args.threads) as executor:
                 try:
                     futures = {executor.submit(process_trial, trial, working_args, base_dir) for base_dir, trial in all_jobs}
-                    concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
+                    #concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
+                    for completed_future in concurrent.futures.as_completed(futures, timeout=1.0):
+                        # Check if the completed future is an exception
+                        if completed_future.exception():
+                            print(f"Future raised an exception: {completed_future.exception()}")
+
+                        # Handle the result or do additional processing
+                        result, f_base_dir = completed_future.result()
+                        if result:
+                            print(f"Result: {result, f_base_dir}")
+                            
+                        # Run the plotting every five minutes 
+                        if time.time() % 300 == 0:
+                            plot_while_calc()
+
+
                 except KeyboardInterrupt:
                     print("Stopping processes...")
                     executor.shutdown(wait=False, cancel_futures=True)
@@ -591,6 +674,9 @@ def main(raw_args: Optional[Sequence[str]] = None):
 
     if args.plot:
         plot_coverage_to_time(args.mode)
+
+    if args.cplot:
+        plot_while_calc()
 
 
 if __name__ == "__main__":
