@@ -67,11 +67,7 @@ def get_starttime(fuzzer_stats_path : Path) -> str:
 
 def get_all_fuzzer(working_args, regex="[a-z]*", cstrip = ""):
     corpus_base_path = working_args["corpus_path"]
-    mode = working_args["mode"]
-
     all_fuzzers : list[Path] = list(corpus_base_path.iterdir())
-    print(list(fuzzer_entry.name for fuzzer_entry in all_fuzzers))
-    
     fuzzer_names : set = set(match.group(0).strip(cstrip) for fuzzer_entry in all_fuzzers if (match := re.search(regex, fuzzer_entry.name)) is not None)
 
     return fuzzer_names
@@ -81,7 +77,6 @@ def copy_corpus(working_args, base_dir : Path, fuzzer_name: str) -> None:
     
     corpus_base_path = working_args["corpus_path"]
     mode = working_args["mode"]
-
     trial_paths : list[Path] = list(corpus_base_path.glob(f"*{fuzzer_name}*"))
 
     if len(trial_paths) == 0:
@@ -112,23 +107,21 @@ def copy_corpus(working_args, base_dir : Path, fuzzer_name: str) -> None:
                 else:
                     queue_path = queue_paths[0].parent
 
-            #queue_path = list(trial_path.glob("*/default/"))[0] 
         if mode == "sileo":
-            # print("in sileo mode")
-            # print(trial_path)
             run_paths : list[Path] = list(trial_path.glob(f"**/run_*"))
             for run in run_paths:
                 dest_path = Path(base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}" / run.name)
                 if run.is_dir():
-                    #shutil.copytree(run, dest_path)
-                    subprocess.call(["rsync", "-a", run, dest_path])
+                    res = subprocess.run(["rsync", "-a", run.as_posix(), dest_path])
+                    print(res.stdout)
+                    print(res.stderr)
             mode = "afl"
             continue
         
         print(f"Queue path: {queue_path}")
-        #shutil.copytree(queue_path, dest_path)
-        subprocess.call(["rsync", "-a", queue_path, dest_path])
-
+        res = subprocess.run(["rsync", "-a", queue_path.as_posix() + "/", dest_path])
+        print(res.stdout)
+        
 
 def extract_timestamp(file_path : Path) -> int:
     # Extract the timestamp from the file name
@@ -273,8 +266,8 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
         with open(f"{profdata_dir}/timestamp_to_b_covered.txt","a") as fd:
                 fd.write(f"{timestamp},{branch_count}\n")
 
-        with open(f"{profdata_dir}/report_{timestamp}.json","a") as fd:
-                fd.write(report_data)
+        #with open(f"{profdata_dir}/report_{timestamp}.json","a") as fd:
+        #        fd.write(report_data)
 
         if len(res.stderr) > 0:
             print(f"Seems an error occured, see {profdata_dir}/llvm-cov.stderr for more information")
@@ -324,9 +317,6 @@ def clean_up(dir_path : Path, create : bool = False):
 def execute_cmd(cmd : List[str], capture_output=True):
     #print(f"command: " + " ".join(cmd))
     res = subprocess.run(cmd, capture_output=capture_output)
-    #print(res.stdout)
-    #print(res.stderr)
-
     return res
 
 
@@ -374,7 +364,7 @@ def get_a_clean_dir(dir_path : Path, remove: bool = True):
     print(f"Init directory structure: {dir_path}")
     if dir_path.exists() and remove:
         shutil.rmtree(dir_path)
-    dir_path.mkdir(parents=True)
+    dir_path.mkdir(parents=True,exist_ok=True)
     return dir_path
 
 def create_directory_structure(base_dir: Path):
@@ -383,7 +373,7 @@ def create_directory_structure(base_dir: Path):
     tmp_corpus_dir : Path  = tmp_dir  / "full_corpus"
     profraw_dir = base_dir / "profraw_files"
 
-    get_a_clean_dir(tmp_dir, remove=False)
+    get_a_clean_dir(tmp_dir)
     get_a_clean_dir(profraw_dir)
     get_a_clean_dir(tmp_corpus_dir)
 
@@ -502,7 +492,7 @@ def plot_coverage_to_time(_mode):
     for mode in modes:
         median, lower, upper = calc_percentile(mode)
 
-        plt.fill_between(np.arange(len(median)), lower, upper, alpha = 0.5)
+        plt.fill_between(np.arange(len(median)), lower, upper, alpha = 0.5) # type: ignore
 
         plt.plot(np.arange(len(median)),median, alpha = 0.5, label=f"Median - {mode}")
     print(_mode)
@@ -561,9 +551,9 @@ def plot_while_calc(stop_event, interval = 0, fuzzer_names = set()):
         #print(f"data paths: {all_ts_data_paths}")
         fuzzer_names = set()
         for ts_data_path in all_ts_data_paths:
-            name_match = re.search("afl", ts_data_path.as_posix())
-            print(f"name match: {name_match}")
+            name_match = re.search("[0-9].[0-9]*c", ts_data_path.as_posix())
             if name_match != None:
+                print(f"name match: {name_match}")
                 if name_match.group(0) in fuzzer_names:
                     continue
                 else:
@@ -669,7 +659,7 @@ def run_calc_and_periodic_plot(executor, main_function, periodic_function, fuzze
     except KeyboardInterrupt:
         print("Execution interrupted. Cancelling ongoing tasks.")
         # Cancel the main function if interrupted
-        future.cancel()
+        future.cancel() # type: ignore
     finally:
         # Signal the stop event to terminate the periodic function
         stop_event.set()
@@ -700,16 +690,11 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
 def main(raw_args: Optional[Sequence[str]] = None):
     global skip_raw, mode
     
-
     args: Namespace = parse_arguments(raw_args)
-
 
     working_args: dict = gen_arguments(args)
     mode = working_args["mode"]
     skip_raw = args.skip
-    
-    # [0-9]\.[0-9]*c
-
     fuzzer_info = []
 
     if args.calc:
@@ -721,19 +706,16 @@ def main(raw_args: Optional[Sequence[str]] = None):
             num_trials = working_args["trials"]
             all_jobs = []
 
-            for fuzzer_name in fuzzer_names:
-                print(fuzzer_name)
+            for i, fuzzer_name in enumerate(fuzzer_names):
+                print(f"Fuzzer: {fuzzer_name}")
                 base_dir = Path("coverage_analysis") / fuzzer_name
                 create_directory_structure(base_dir)
                 copy_corpus(working_args, base_dir, fuzzer_name)
                 fuzzer_info.append(base_dir)
                 all_jobs.extend(list(zip([base_dir] * num_trials, range(num_trials))))
+                print(f"Done: {i}/{len(fuzzer_names)}\n")
 
-            total_runs = len(fuzzer_names) * num_trials
-            num_parallel_fuzzers = args.threads // num_trials
-
-            print(f"Number of parallel fuzzers: {num_parallel_fuzzers}")
-
+            # testing
             #for base_dir, trial in all_jobs:
             #    process_trial(0, working_args, base_dir)
 
@@ -755,7 +737,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
 
     if args.cplot:
         stop_event = threading.Event()
-        plot_while_calc(stop_event,fuzzer_names={"afl"})
+        plot_while_calc(stop_event)
 
 
 if __name__ == "__main__":
