@@ -113,14 +113,14 @@ def copy_corpus(working_args, base_dir : Path, fuzzer_name: str) -> None:
                 dest_path = Path(base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}" / run.name)
                 if run.is_dir():
                     res = subprocess.run(["rsync", "-a", run.as_posix(), dest_path])
-                    print(res.stdout)
-                    print(res.stderr)
+                    #print(res.stdout)
+                    #print(res.stderr)
             mode = "afl"
             continue
         
         print(f"Queue path: {queue_path}")
         res = subprocess.run(["rsync", "-a", queue_path.as_posix() + "/", dest_path])
-        print(res.stdout)
+        #print(res.stdout)
         
 
 def extract_timestamp(file_path : Path) -> int:
@@ -538,7 +538,7 @@ def plot_while_calc(stop_event, interval = 0, fuzzer_names = set()):
     img_cnt = 0
     while not stop_event.is_set():
 
-        all_ts_data_paths: list[Path] = sorted(list(base_dir.glob("./**/timestamp_to_b_covered.txt")))
+        all_ts_data_paths: list[Path] = sorted(list(base_dir.glob("./**/profdata_files/*/timestamp_to_b_covered.txt")))
         if len(all_ts_data_paths) == 0:
             if interval == 0 or stop_event.is_set():
                 print("no timestamp files found")
@@ -642,7 +642,7 @@ def run_calc(num_threads, working_args, all_jobs):
         futures = {executor.submit(process_trial, trial, working_args, base_dir) for base_dir, trial in all_jobs}
         #concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
 
-def run_calc_and_periodic_plot(executor, main_function, periodic_function, fuzzer_names, main_args, interval_seconds=500):
+def run_calc_and_periodic_plot(executor, main_function, periodic_function, fuzzer_names, main_args, interval_seconds=60):
     stop_event = threading.Event()
 
     # Start the periodic function in a separate thread
@@ -713,14 +713,14 @@ def main(raw_args: Optional[Sequence[str]] = None):
                 copy_corpus(working_args, base_dir, fuzzer_name)
                 fuzzer_info.append(base_dir)
                 all_jobs.extend(list(zip([base_dir] * num_trials, range(num_trials))))
-                print(f"Done: {i}/{len(fuzzer_names)}\n")
+                print(f"Done: {i+1}/{len(fuzzer_names)}\n")
 
             # testing
             #for base_dir, trial in all_jobs:
             #    process_trial(0, working_args, base_dir)
 
             main_args = (args.threads, working_args, all_jobs)
-            run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, plot_while_calc, fuzzer_names, main_args, interval_seconds=150)
+            run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, plot_while_calc, fuzzer_names, main_args, interval_seconds=60)
             
         print("All trials processed.")
     
