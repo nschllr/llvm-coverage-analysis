@@ -85,7 +85,7 @@ def copy_corpus(working_args, base_dir : Path, fuzzer_name: str) -> None:
 
     for trial_id, trial_path in enumerate(trial_paths):
         print(f"creating trial: trial_{trial_id}")
-        (base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}").mkdir()
+        (base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}").mkdir(exist_ok=True)
         (base_dir / "profraw_files" / f"trial_{trial_id}").mkdir(exist_ok=True, parents=True)
         (base_dir / "profdata_files" / f"trial_{trial_id}").mkdir(exist_ok=True, parents=True)
         
@@ -199,38 +199,38 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
             testcases_to_starttime.extend(list(zip([starttime] * len(testcases), testcases)))
             run_to_startime.update({f"run_{run_id}":starttime})
 
-    if not skip_raw:
-        print(f"Generating profraw data from testcases... ({trial})")
-        cov_times = []
 
-        for i, testcase_to_starttime in enumerate(testcases_to_starttime):
-            starttime, testcase = testcase_to_starttime
+    print(f"Generating profraw data from testcases... ({trial})")
+    cov_times = []
 
-            if i % 1000 == 0:
-                print(f"Processing Testcase {trial}:\t {i}/{len(testcases_to_starttime)}")
-            testcase_time = testcase.name.split(",time:")[1].split(",")[0]
-            cov_time = int(starttime) + int(testcase_time) // 1000
-            cov_times.append(cov_time)
-            profraw_file = f"{profraw_dir}/llvm_{i:08d}_ts:{cov_time}.profraw"
-            # print(f"profraw_file:",profraw_file)
-            os.environ["LLVM_PROFILE_FILE"] = profraw_file
-            llvm_target_cmd = f"{target_bin} {target_args} {testcase}"
+    for i, testcase_to_starttime in enumerate(testcases_to_starttime):
+        starttime, testcase = testcase_to_starttime
 
-            execute_cmd(llvm_target_cmd.split(" "))
-        print(f"\nGenerating profraw files done ({trial})!")
+        if i % 1000 == 0:
+            print(f"Processing Testcase {trial}:\t {i}/{len(testcases_to_starttime)}")
+        testcase_time = testcase.name.split(",time:")[1].split(",")[0]
+        cov_time = int(starttime) + int(testcase_time) // 1000
+        cov_times.append(cov_time)
+        profraw_file = f"{profraw_dir}/llvm_{i:08d}_ts:{cov_time}.profraw"
+        # print(f"profraw_file:",profraw_file)
+        os.environ["LLVM_PROFILE_FILE"] = profraw_file
+        llvm_target_cmd = f"{target_bin} {target_args} {testcase}"
 
-        profraw_files : list[Path] = sorted(list(profraw_dir.iterdir()))
-        clean_up(profdata_dir, create = True)
+        execute_cmd(llvm_target_cmd.split(" "))
+    print(f"\nGenerating profraw files done ({trial})!")
 
-        file_groups = group_files_by_minute(profraw_files)
+    profraw_files : list[Path] = sorted(list(profraw_dir.iterdir()))
+    clean_up(profdata_dir, create = True)
 
-        print("Start multiprocessed merging by minute")
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            futures = []
-            for minute, files in file_groups.items():
-                # merge_by_minute_single(files, minute, trial)
-                futures.append(executor.submit(merge_by_minute_single, files, minute, trial))
-                concurrent.futures.wait(futures)
+    file_groups = group_files_by_minute(profraw_files)
+
+    print("Start multiprocessed merging by minute")
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        futures = []
+        for minute, files in file_groups.items():
+            # merge_by_minute_single(files, minute, trial)
+            futures.append(executor.submit(merge_by_minute_single, files, minute, trial))
+            concurrent.futures.wait(futures)
 
     print(f"Merging and exporting data profdata... ({trial})")
 
@@ -373,6 +373,13 @@ def create_directory_structure(base_dir: Path, skip_corpus = False):
     profraw_dir = base_dir / "profraw_files"
 
     get_a_clean_dir(profraw_dir)
+
+    if skip_corpus and not tmp_corpus_dir.exists():
+        print(f"it seems you want to skip the corpus copy, but there is no corpus at {tmp_corpus_dir}")
+        exit()
+    if skip_corpus:
+        print("Skipping corpus copy!!\nI hope you know what you are doing and you have the correct corpus here... 5sec to think about")
+        time.sleep(5)
     get_a_clean_dir(tmp_corpus_dir,  not skip_corpus)
 
 
@@ -725,7 +732,7 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--res", action="store_true", default=False, help="Print results of mode")
     parser.add_argument("--plot", action="store_true", default=False, help="Plot results of mode")
     parser.add_argument("--cplot", action="store_true", default=False, help="Plot results of mode")
-    parser.add_argument("--skip", action="store_true", default=False, help="Skip corpus copy")
+    parser.add_argument("--skip", action="store_true", default=False, help="Skip corpus copy. WARNING: rsync will anyways check for files left")
     parser.add_argument("--regex", type=str, default="", help="Regex to get specific filename identifier: e.g.\n\t\tdirectory: afl_0 afl_1 ...\n\t\tregex: afl_[0-9]*")
     parser.add_argument("--strip", type=str, default="", help="Strip the resulting fuzzer names by given character")
     parser.add_argument("--threads", type=int, default=80, help="Maximum number of threads")
@@ -783,7 +790,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
 
     if args.cplot:
         stop_event = threading.Event()
-        plot_while_calc(stop_event, fuzzer_names={"afl","sileo"})
+        plot_while_calc(stop_event)
 
 
 if __name__ == "__main__":
