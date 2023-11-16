@@ -32,7 +32,7 @@ import numpy as np
 import subprocess
 
 CONTAINER_NAME = "llvm_cov_analysis"
-skip_raw = False
+skip_corpus = False
 mode = ""
 
 def get_testcases(corpus_path: Path) -> list[Path]:
@@ -366,15 +366,14 @@ def get_a_clean_dir(dir_path : Path, remove: bool = True):
     dir_path.mkdir(parents=True,exist_ok=True)
     return dir_path
 
-def create_directory_structure(base_dir: Path):
+def create_directory_structure(base_dir: Path, skip_corpus = False):
 
     tmp_dir : Path = base_dir / "tmp"
     tmp_corpus_dir : Path  = tmp_dir  / "full_corpus"
     profraw_dir = base_dir / "profraw_files"
 
-    get_a_clean_dir(tmp_dir)
     get_a_clean_dir(profraw_dir)
-    get_a_clean_dir(tmp_corpus_dir)
+    get_a_clean_dir(tmp_corpus_dir,  not skip_corpus)
 
 
 def gen_arguments(args : Namespace) -> dict[str,Any]:
@@ -726,7 +725,7 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--res", action="store_true", default=False, help="Print results of mode")
     parser.add_argument("--plot", action="store_true", default=False, help="Plot results of mode")
     parser.add_argument("--cplot", action="store_true", default=False, help="Plot results of mode")
-    parser.add_argument("--skip", action="store_true", default=False, help="Skip raw processing")
+    parser.add_argument("--skip", action="store_true", default=False, help="Skip corpus copy")
     parser.add_argument("--regex", type=str, default="", help="Regex to get specific filename identifier: e.g.\n\t\tdirectory: afl_0 afl_1 ...\n\t\tregex: afl_[0-9]*")
     parser.add_argument("--strip", type=str, default="", help="Strip the resulting fuzzer names by given character")
     parser.add_argument("--threads", type=int, default=80, help="Maximum number of threads")
@@ -735,39 +734,39 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
 
 
 def main(raw_args: Optional[Sequence[str]] = None):
-    global skip_raw, mode
+    global skip_corpus, mode
     
     args: Namespace = parse_arguments(raw_args)
 
     working_args: dict = gen_arguments(args)
     mode = working_args["mode"]
-    skip_raw = args.skip
+    skip_corpus = args.skip
     fuzzer_info = []
 
     if args.calc:
-        if not skip_raw:
-            fuzzer_names = get_all_fuzzer(working_args,regex=args.regex, cstrip=args.strip)
-            print("found the following fuzzers")
-            print(fuzzer_names)
 
-            num_trials = working_args["trials"]
-            all_jobs = []
+        fuzzer_names = get_all_fuzzer(working_args,regex=args.regex, cstrip=args.strip)
+        print("found the following fuzzers")
+        print(fuzzer_names)
 
-            for i, fuzzer_name in enumerate(fuzzer_names):
-                print(f"Fuzzer: {fuzzer_name}")
-                base_dir = Path("coverage_analysis") / fuzzer_name
-                create_directory_structure(base_dir)
-                copy_corpus(working_args, base_dir, fuzzer_name)
-                fuzzer_info.append(base_dir)
-                all_jobs.extend(list(zip([base_dir] * num_trials, range(num_trials))))
-                print(f"Done: {i+1}/{len(fuzzer_names)}\n")
+        num_trials = working_args["trials"]
+        all_jobs = []
 
-            # testing
-            #for base_dir, trial in all_jobs:
-            #    process_trial(0, working_args, base_dir)
+        for i, fuzzer_name in enumerate(fuzzer_names):
+            print(f"Fuzzer: {fuzzer_name}")
+            base_dir = Path("coverage_analysis") / fuzzer_name
+            create_directory_structure(base_dir, skip_corpus)
+            copy_corpus(working_args, base_dir, fuzzer_name)
+            fuzzer_info.append(base_dir)
+            all_jobs.extend(list(zip([base_dir] * num_trials, range(num_trials))))
+            print(f"Done: {i+1}/{len(fuzzer_names)}\n")
 
-            main_args = (args.threads, working_args, all_jobs)
-            run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, plot_while_calc, fuzzer_names, main_args, interval_seconds=60)
+        # testing
+        #for base_dir, trial in all_jobs:
+        #    process_trial(0, working_args, base_dir)
+
+        main_args = (args.threads, working_args, all_jobs)
+        run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, plot_while_calc, fuzzer_names, main_args, interval_seconds=60)
             
         print("All trials processed.")
     
