@@ -519,12 +519,28 @@ def is_color_different(color, used_colors, threshold=0.5):
     return True
 
 
-def plot_while_calc(stop_event, interval = 0):
+def plot_while_calc(stop_event, interval = 0, fuzzer_names = set()):
     base_dir = Path("coverage_analysis") 
 
     if not Path("plots").exists():
-        Path("plots").mkdir()
+        Path("plots").mkdir()    
+    
+    if not Path("plots/incremental").exists():
+        Path("plots/incremental").mkdir()
 
+    fuzzer_colors: dict = {}
+    used_colors = set()
+    
+    if len(fuzzer_names) > 0:
+        for fuzzer_name in fuzzer_names:
+            for color_idx in range(len(fuzzer_names)): 
+                fuzzer_color = random_rgb_color()    
+                # Check if the color is sufficiently different from used colors
+                while not is_color_different(fuzzer_color, used_colors, threshold=0.5):
+                    fuzzer_color = random_rgb_color()
+                fuzzer_colors.update({fuzzer_name:fuzzer_color})
+
+    img_cnt = 0
     while not stop_event.is_set():
 
         all_ts_data_paths: list[Path] = sorted(list(base_dir.glob("./**/timestamp_to_b_covered.txt")))
@@ -541,7 +557,7 @@ def plot_while_calc(stop_event, interval = 0):
         fuzzer_names = set()
         for ts_data_path in all_ts_data_paths:
             name_match = re.search("[0-9].[0-9]*c", ts_data_path.as_posix())
-            # print(f"name match: {name_match}")
+            print(f"name match: {name_match}")
             if name_match != None:
                 if name_match.group(0) in fuzzer_names:
                     continue
@@ -554,19 +570,12 @@ def plot_while_calc(stop_event, interval = 0):
                 continue
 
         fig, ax = plt.subplots()
-        used_colors = set()
+
 
         for fuzzer_name in fuzzer_names:
             # all trial paths of fuzzer with name...
             # coverage_analysis_old/afl/profdata_files/trial_0/timestamp_to_b_covered.txt
             all_trial_paths = sorted(list(base_dir.glob(f"./{fuzzer_name}/profdata_files/*/timestamp_to_b_covered.txt")))
-
-            fuzzer_color = random_rgb_color()
-
-            # Check if the color is sufficiently different from used colors
-            while not is_color_different(fuzzer_color, used_colors, threshold=0.5):
-                print("coloring")
-                fuzzer_color = random_rgb_color()
 
             for ts_to_branch_file in all_trial_paths:
                 ts_to_branch = []
@@ -601,6 +610,11 @@ def plot_while_calc(stop_event, interval = 0):
                             break
                     ts_relative += 1
 
+                if fuzzer_name in fuzzer_colors.keys():
+                    fuzzer_color = fuzzer_colors[fuzzer_name]
+                else:
+                    fuzzer_color = random_rgb_color()
+
                 ax.plot(ts_list, branches_covered_list, color=fuzzer_color, alpha = 0.5, label=f"{fuzzer_name}")
 
         # Add a legend for each unique color
@@ -612,6 +626,8 @@ def plot_while_calc(stop_event, interval = 0):
         plt.ylabel("Number of branches covered")
         plt.show()
         plt.savefig(f"plots/all.png",dpi=150)
+        plt.savefig(f"plots/incremental/{img_cnt}.png",dpi=150)
+
         
         if interval == 0:
             stop_event.set()
@@ -630,11 +646,11 @@ def run_calc(num_threads, working_args, all_jobs):
         futures = {executor.submit(process_trial, trial, working_args, base_dir) for base_dir, trial in all_jobs}
         #concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
 
-def run_calc_and_periodic_plot(executor, main_function, periodic_function, main_args, interval_seconds=500):
+def run_calc_and_periodic_plot(executor, main_function, periodic_function, fuzzer_names, main_args, interval_seconds=500):
     stop_event = threading.Event()
 
     # Start the periodic function in a separate thread
-    periodic_thread = threading.Thread(target=periodic_function, args=(stop_event,interval_seconds))
+    periodic_thread = threading.Thread(target=periodic_function, args=(stop_event,interval_seconds, fuzzer_names))
     periodic_thread.start()
 
     try:
@@ -716,31 +732,8 @@ def main(raw_args: Optional[Sequence[str]] = None):
             #    process_trial(0, working_args, base_dir)
 
             main_args = (args.threads, working_args, all_jobs)
-            run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, plot_while_calc, main_args, interval_seconds=300)
+            run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, plot_while_calc, fuzzer_names, main_args, interval_seconds=300)
             
-            # futures = {}
-            # with concurrent.futures.ProcessPoolExecutor(max_workers=args.threads) as executor:
-            #     try:
-            #         futures = {executor.submit(process_trial, trial, working_args, base_dir) for base_dir, trial in all_jobs}
-            #         #concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
-            #         for completed_future in concurrent.futures.as_completed(futures, timeout=1.0):
-            #             # Check if the completed future is an exception
-            #             if completed_future.exception():
-            #                 print(f"Future raised an exception: {completed_future.exception()}")
-
-            #             # Handle the result or do additional processing
-            #             result, f_base_dir = completed_future.result()
-            #             if result:
-            #                 print(f"Result: {result, f_base_dir}")
-                            
-            #             # Run the plotting every five minutes 
-            #             if time.time() % 300 == 0:
-            #                 plot_while_calc()
-                            
-            #     except KeyboardInterrupt:
-            #         print("Stopping processes...")
-            #         executor.shutdown(wait=False, cancel_futures=True)
-
         print("All trials processed.")
     
     if args.res:
@@ -755,7 +748,8 @@ def main(raw_args: Optional[Sequence[str]] = None):
         plot_coverage_to_time(args.mode)
 
     if args.cplot:
-        plot_while_calc(threading.Event().set())
+        stop_event = threading.Event()
+        plot_while_calc(stop_event,fuzzer_names={"afl"})
 
 
 if __name__ == "__main__":
