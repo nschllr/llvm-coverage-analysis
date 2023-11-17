@@ -628,8 +628,7 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
             trial_results_ts.append(ts_list)
 
         if len(trial_results_branches) == 0:
-            print("something went wrong!")
-            return
+            continue
         all_trial_branches = []
         min_num_entries: int = min([len(x) for x in trial_results_branches])
         for idx in range(min_num_entries):
@@ -655,23 +654,29 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
             fuzzer_color = random_rgb_color()
         #ax.fill_between(np.arange(len(median)), lower, upper, alpha = 0.2) # type: ignore
         ax.plot(np.arange(len(median)), median, color=fuzzer_color, alpha = 0.65, label=f"Median-{fuzzer_name}")
+        done = True
 
-    # Add a legend for each unique color
-    handles, labels = plt.gca().get_legend_handles_labels()
-    by_label = dict(zip(labels, handles))
-    plt.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 4})
+    if done:
+        # Add a legend for each unique color
+        handles, labels = plt.gca().get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        plt.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 4})
 
-    plt.xlabel("Time (s)")
-    plt.ylabel("Number of branches covered")
-    plt.savefig(f"plots/all_median.png",dpi=150)
-    plt.savefig(f"plots/incremental/median_{img_cnt}.png",dpi=150)
+        plt.xlabel("Time (s)")
+        plt.ylabel("Number of branches covered")
+        plt.savefig(f"plots/all_median.png",dpi=150)
+        plt.savefig(f"plots/incremental/median_{img_cnt}.png",dpi=150)
 
-    return True
+        return True
+    else:
+        print("Plotting failed")
+        return False
   
 
 def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str] = set(), skip_fill = True):
 
     cnt = 0
+
     while not stop_event.is_set():
         try:
             plot_while_calc(fuzzer_names, skip_fill,cnt)
