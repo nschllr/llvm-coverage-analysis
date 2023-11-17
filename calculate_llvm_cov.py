@@ -524,7 +524,8 @@ def is_color_different(color, used_colors, threshold=0.5):
 
 
 def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 0):
-    base_dir = Path("coverage_analysis") 
+    base_dir = Path("coverage_analysis")
+    done = False
 
     if not Path("plots").exists():
         Path("plots").mkdir()    
@@ -652,7 +653,7 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
             fuzzer_color = fuzzer_colors[fuzzer_name]
         else:
             fuzzer_color = random_rgb_color()
-        ax.fill_between(np.arange(len(median)), lower, upper, alpha = 0.2) # type: ignore
+        #ax.fill_between(np.arange(len(median)), lower, upper, alpha = 0.2) # type: ignore
         ax.plot(np.arange(len(median)), median, color=fuzzer_color, alpha = 0.65, label=f"Median-{fuzzer_name}")
 
     # Add a legend for each unique color
@@ -664,13 +665,22 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
     plt.ylabel("Number of branches covered")
     plt.savefig(f"plots/all_median.png",dpi=150)
     plt.savefig(f"plots/incremental/median_{img_cnt}.png",dpi=150)
+
+    return True
   
 
 def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str] = set(), skip_fill = True):
 
     cnt = 0
     while not stop_event.is_set():
-        plot_while_calc(fuzzer_names, skip_fill,cnt)
+        try:
+            plot_while_calc(fuzzer_names, skip_fill,cnt)
+        except Exception as e:
+            print("Something went wrong!")
+            print(e)
+            with open("error.txt", "w") as fd:
+                fd.write(str(e))
+            exit()
         cnt += 1
         time.sleep(interval)
 
