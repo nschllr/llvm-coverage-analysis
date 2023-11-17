@@ -11,7 +11,7 @@
 #   afl_out/sileo_TRIAL_NUM/%SILEO_MODE%/%TARGET%/worker_0/run_NUM/{default/queue, default/fuzzer_stats}
 #
 
-
+import traceback
 from argparse import ArgumentParser, Namespace
 from collections import defaultdict
 from datetime import datetime
@@ -630,6 +630,8 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
             continue
         all_trial_branches = []
         min_num_entries: int = min([len(x) for x in trial_results_branches])
+        if min_num_entries < 2:
+            continue
         for idx in range(min_num_entries):
             value_series = []
             for trial_idx in range(len(trial_results_branches)):
@@ -639,12 +641,16 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
         lower = []
         upper = []
 
-        for values in all_trial_branches:
-            d_interval = sorted(values)[2:8]
-            min_val = d_interval[0]
-            max_val = d_interval[-1]
-            lower.append(min_val)
-            upper.append(max_val)
+        try:
+            for values in all_trial_branches:
+                d_interval = sorted(values)[2:8]
+                min_val = d_interval[0]
+                max_val = d_interval[-1]
+                lower.append(min_val)
+                upper.append(max_val)
+        except Exception as e:
+            print("Seems not enough values to unpack")
+            print(e)
         median = np.median(all_trial_branches, axis=1)
 
         if fuzzer_name in fuzzer_colors.keys():
@@ -664,7 +670,7 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
         plt.xlabel("Time (s)")
         plt.ylabel("Number of branches covered")
         plt.savefig(f"plots/all_median.png",dpi=150)
-        plt.savefig(f"plots/incremental/median_{img_cnt}.png",dpi=150)
+        plt.savefig(f"plots/incremental/median_{img_cnt:04d}.png",dpi=150)
 
         return True
     else:
@@ -691,9 +697,10 @@ def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str]
         try:
             plot_while_calc(fuzzer_names, skip_fill,cnt, fuzzer_colors=fuzzer_colors)
         except Exception as e:
+            tb = traceback.format_exc()
             print("Something went wrong!")
-            with open("error.txt", "w") as fd:
-                fd.write(str(e))
+            with open("error.txt", "a") as fd:
+                fd.write(str(tb))
             exit()
         cnt += 1
         time.sleep(interval)
