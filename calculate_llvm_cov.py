@@ -168,6 +168,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
     profdata_dir : Path = base_dir / "profdata_files" / trial
     target_bin = working_args["cov_bin"]
     target_args = working_args["target_args"]
+    clean_up(profdata_dir, create = True)
 
     print("Starting llvm coverage analysis")
 
@@ -280,7 +281,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
 
     # cleanup to save space
     clean_up(profraw_dir)
-    clean_up(full_corpus)
+    #clean_up(full_corpus)
 
     return True, base_dir
 
@@ -561,7 +562,7 @@ def plot_while_calc(stop_event, interval : int = 0, fuzzer_names = set(), skip_f
             for ts_data_path in all_ts_data_paths:
                 name_match = re.search("[0-9].[0-9]*c", ts_data_path.as_posix())
                 if name_match != None:
-                    print(f"name match: {name_match}")
+                    #print(f"name match: {name_match.group(0)}")
                     if name_match.group(0) in fuzzer_names:
                         continue
                     else:
@@ -572,9 +573,7 @@ def plot_while_calc(stop_event, interval : int = 0, fuzzer_names = set(), skip_f
                     fuzzer_name = ""
                     continue
 
-
-
-        for fuzzer_name in fuzzer_names:
+        for fuzzer_name in sorted(fuzzer_names):
             # all trial paths of fuzzer with name...
             # coverage_analysis_old/afl/profdata_files/trial_0/timestamp_to_b_covered.txt
             all_trial_paths = sorted(list(base_dir.glob(f"./{fuzzer_name}/profdata_files/*/timestamp_to_b_covered.txt")))
@@ -627,17 +626,12 @@ def plot_while_calc(stop_event, interval : int = 0, fuzzer_names = set(), skip_f
                                 ts_list.pop()
                                 branches_covered_list.pop()
 
-                # if fuzzer_name in fuzzer_colors.keys():
-                #     fuzzer_color = fuzzer_colors[fuzzer_name]
-                # else:
-                #     fuzzer_color = random_rgb_color()
-
-                #ax.plot(ts_list, branches_covered_list, color=fuzzer_color, alpha = 0.5, label=f"{fuzzer_name}")
-
-
                 trial_results_branches.append(branches_covered_list)
                 trial_results_ts.append(ts_list)
 
+            if len(trial_results_branches) == 0:
+                print("something went wrong!")
+                break
             all_trial_branches = []
             min_num_entries: int = min([len(x) for x in trial_results_branches])
             for idx in range(min_num_entries):
