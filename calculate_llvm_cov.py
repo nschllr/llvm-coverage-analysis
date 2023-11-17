@@ -765,11 +765,11 @@ def main(raw_args: Optional[Sequence[str]] = None):
             print(f"Done: {i+1}/{len(fuzzer_names)}\n")
 
         # testing
-        for base_dir, trial in all_jobs:
-            process_trial(0, working_args, base_dir)
+        #for base_dir, trial in all_jobs:
+        #    process_trial(0, working_args, base_dir)
 
-        #main_args = (args.threads, working_args, all_jobs)
-        #run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, interval_plot_thread, fuzzer_names, main_args, interval_seconds=60)
+        main_args = (args.threads, working_args, all_jobs)
+        run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, interval_plot_thread, fuzzer_names, main_args, interval_seconds=90)
             
         print("All trials processed.")
     
