@@ -519,7 +519,7 @@ def is_color_different(color, used_colors, threshold=0.5):
     return True
 
 
-def plot_while_calc(fuzzer_names = set(), skip_fill = True, img_cnt = 0):
+def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 0):
     base_dir = Path("coverage_analysis") 
 
     if not Path("plots").exists():
@@ -662,7 +662,7 @@ def plot_while_calc(fuzzer_names = set(), skip_fill = True, img_cnt = 0):
     plt.savefig(f"plots/incremental/median_{img_cnt}.png",dpi=150)
   
 
-def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names = set(), skip_fill = True):
+def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str] = set(), skip_fill = True):
 
     cnt = 0
     while not stop_event.is_set():
@@ -679,13 +679,13 @@ def run_calc(num_threads, working_args, all_jobs):
     futures = {}
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_threads-1) as executor:
         futures = {executor.submit(process_trial, trial, working_args, base_dir) for base_dir, trial in all_jobs}
-        #concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
+        concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
 
-def run_calc_and_periodic_plot(executor, main_function, periodic_function, fuzzer_names, main_args, interval_seconds=60):
+def run_calc_and_periodic_plot(executor, main_function, periodic_function, fuzzer_names : set[str], main_args, interval_seconds=60):
     stop_event = threading.Event()
 
     # Start the periodic function in a separate thread
-    periodic_thread = threading.Thread(target=periodic_function, args=(fuzzer_names))
+    periodic_thread = threading.Thread(target=periodic_function, args=(stop_event, interval_seconds, fuzzer_names))
     periodic_thread.start()
 
     try:
@@ -713,6 +713,7 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--target", type=str, default="objdump", help="Target name")
     parser.add_argument("--cov_bin", type=Path, default=None, help="Path to llvm compiled coverage binary")
     parser.add_argument("--mode", type=str, default="afl", help="Set mode sileo | afl")
+    parser.add_argument("--fuzzer_names", type=str, default="afl", help="Fuzzer names in quotes")
     parser.add_argument("--target_args", type=str, default="", help="Target arguments, use quotes")
     parser.add_argument("--calc", action="store_true", default=False, help="Calculate coverage")
     parser.add_argument("--res", action="store_true", default=False, help="Print results of mode")
@@ -780,7 +781,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
         plot_coverage_to_time(args.mode)
 
     if args.cplot:
-        plot_while_calc()
+        plot_while_calc({args.fuzzer_names})
 
 
 if __name__ == "__main__":
