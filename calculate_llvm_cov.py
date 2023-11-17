@@ -523,7 +523,7 @@ def is_color_different(color, used_colors, threshold=0.5):
     return True
 
 
-def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 0):
+def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 0, fuzzer_colors : dict = {}):
     base_dir = Path("coverage_analysis")
     done = False
 
@@ -533,10 +533,9 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
     if not Path("plots/incremental").exists():
         Path("plots/incremental").mkdir()
 
-    fuzzer_colors: dict = {}
     used_colors = set()
-    
-    if len(fuzzer_names) > 0:
+
+    if len(fuzzer_names) > 0 and len(fuzzer_colors) == 0:
         for fuzzer_name in fuzzer_names:
             for color_idx in range(len(fuzzer_names)): 
                 fuzzer_color = random_rgb_color()    
@@ -676,13 +675,23 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
 def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str] = set(), skip_fill = True):
 
     cnt = 0
+    fuzzer_colors = {}
+    used_colors = set()
+
+    if len(fuzzer_names) > 0:
+        for fuzzer_name in fuzzer_names:
+            for _ in range(len(fuzzer_names)): 
+                fuzzer_color = random_rgb_color()    
+                # Check if the color is sufficiently different from used colors
+                while not is_color_different(fuzzer_color, used_colors, threshold=0.75):
+                    fuzzer_color = random_rgb_color()
+                fuzzer_colors.update({fuzzer_name:fuzzer_color})
 
     while not stop_event.is_set():
         try:
-            plot_while_calc(fuzzer_names, skip_fill,cnt)
+            plot_while_calc(fuzzer_names, skip_fill,cnt, fuzzer_colors=fuzzer_colors)
         except Exception as e:
             print("Something went wrong!")
-            print(e)
             with open("error.txt", "w") as fd:
                 fd.write(str(e))
             exit()
