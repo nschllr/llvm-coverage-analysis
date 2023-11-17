@@ -201,7 +201,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
             run_to_startime.update({f"run_{run_id}":starttime})
 
 
-    print(f"Generating profraw data from testcases... ({trial})")
+    print(f"Generating profraw data from testcases... ({trial} - {base_dir.name})")
     cov_times = []
 
     for i, testcase_to_starttime in enumerate(testcases_to_starttime):
@@ -209,7 +209,11 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
 
         if i % 1000 == 0:
             print(f"Processing Testcase {trial}:\t {i}/{len(testcases_to_starttime)}")
-        testcase_time = testcase.name.split(",time:")[1].split(",")[0]
+
+        if "time" not in testcase.name:
+            testcase_time = 0
+        else:
+            testcase_time = testcase.name.split(",time:")[1].split(",")[0]
         cov_time = int(starttime) + int(testcase_time) // 1000
         cov_times.append(cov_time)
         profraw_file = f"{profraw_dir}/llvm_{i:08d}_ts:{cov_time}.profraw"
@@ -218,7 +222,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
         llvm_target_cmd = f"{target_bin} {target_args} {testcase}"
 
         execute_cmd(llvm_target_cmd.split(" "))
-    print(f"\nGenerating profraw files done ({trial})!")
+    print(f"\nGenerating profraw files done ({trial} - {base_dir.name})!")
 
     profraw_files : list[Path] = sorted(list(profraw_dir.iterdir()))
     clean_up(profdata_dir, create = True)
@@ -233,7 +237,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
             futures.append(executor.submit(merge_by_minute_single, files, minute, trial))
             concurrent.futures.wait(futures)
 
-    print(f"Merging and exporting data profdata... ({trial})")
+    print(f"Merging and exporting data profdata... ({trial} - {base_dir.name})")
 
     profdata_files : list[Path] = sorted(list(profdata_dir.iterdir()))
     timestamp_to_b_covered : list[tuple]= []
@@ -249,12 +253,12 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
         else:
             llvm_profdata_cmd: str = f"llvm-profdata-14 merge -sparse {profdata_file} -o {profdata_file_final}"
 
-        #print(f"Running command ({trial}): {llvm_profdata_cmd}")
-        print(f"Processing (merge profdata) ({trial}): {id}/{len(profdata_files)} -- {round(id / len(profdata_files)*100,2)}%")
+        #print(f"Running command ({trial} - {base_dir.name}): {llvm_profdata_cmd}")
+        print(f"Processing (merge profdata) ({trial} - {base_dir.name}): {id}/{len(profdata_files)} -- {round(id / len(profdata_files)*100,2)}%")
         
         execute_cmd(llvm_profdata_cmd.split(" "))
         llvm_export_cmd = f"llvm-cov-14 export -format=text -region-coverage-gt=0 -skip-expansions {target_bin} -instr-profile={profdata_file_final}"
-        #print(f"Running export command ({trial}): {llvm_export_cmd}")
+        #print(f"Running export command ({trial} - {base_dir.name}): {llvm_export_cmd}")
         res = execute_cmd(llvm_export_cmd.split(" "), capture_output=True)
         report_data = json.loads(res.stdout)
         
@@ -277,7 +281,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
             fd.write(res.stdout)
 
         profdata_file.unlink()
-    print(f"Export done ({trial})")
+    print(f"Export done ({trial} - {base_dir.name})")
 
     # cleanup to save space
     clean_up(profraw_dir)
@@ -761,11 +765,11 @@ def main(raw_args: Optional[Sequence[str]] = None):
             print(f"Done: {i+1}/{len(fuzzer_names)}\n")
 
         # testing
-        #for base_dir, trial in all_jobs:
-        #    process_trial(0, working_args, base_dir)
+        for base_dir, trial in all_jobs:
+            process_trial(0, working_args, base_dir)
 
-        main_args = (args.threads, working_args, all_jobs)
-        run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, interval_plot_thread, fuzzer_names, main_args, interval_seconds=60)
+        #main_args = (args.threads, working_args, all_jobs)
+        #run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, interval_plot_thread, fuzzer_names, main_args, interval_seconds=60)
             
         print("All trials processed.")
     
