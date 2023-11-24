@@ -30,13 +30,17 @@ import time
 import matplotlib.pyplot as plt
 import numpy as np
 import subprocess
+import hashlib
+from natsort import natsorted
 
 CONTAINER_NAME = "llvm_cov_analysis"
 skip_corpus = False
 mode = ""
+show_bands = False
+regex = ""
 
 def get_testcases(corpus_path: Path) -> list[Path]:
-    #print(f"Gathering testcases from {corpus_path.as_posix()}")
+    print(f"Gathering testcases from {corpus_path.as_posix()}")
     testcases = sorted(list(corpus_path.glob("id:*")))
     return testcases
 
@@ -64,20 +68,19 @@ def get_starttime(fuzzer_stats_path : Path) -> str:
     return ""
 
 
-def get_all_fuzzer(working_args, regex="[a-z]*", cstrip = ""):
+def get_all_fuzzer(working_args, cstrip = ""):
     corpus_base_path = working_args["corpus_path"]
-    all_fuzzers : list[Path] = list(corpus_base_path.iterdir())
-    fuzzer_names : set = set(match.group(0).strip(cstrip) for fuzzer_entry in all_fuzzers if (match := re.search(regex, fuzzer_entry.name)) is not None)
+    all_fuzzers : list[Path] = natsorted(list(corpus_base_path.iterdir()))
+    fuzzer_names : list = sorted(list(set(match.group(0).strip(cstrip) for fuzzer_entry in all_fuzzers if (match := re.search(regex, fuzzer_entry.name)) is not None)))
 
     return fuzzer_names
 
 
-def copy_corpus(working_args, base_dir : Path, fuzzer_name: str) -> None:
+def copy_corpus_old(working_args, base_dir : Path, fuzzer_name: str) -> None:
     
     corpus_base_path = working_args["corpus_path"]
-    mode = working_args["mode"]
     trial_paths : list[Path] = list(corpus_base_path.glob(f"*{fuzzer_name}*"))
-
+    
     if len(trial_paths) == 0:
         # fuzzbench trials
         print("Found fuzzbench trials")
@@ -89,38 +92,33 @@ def copy_corpus(working_args, base_dir : Path, fuzzer_name: str) -> None:
         (base_dir / "profraw_files" / f"trial_{trial_id}").mkdir(exist_ok=True, parents=True)
         (base_dir / "profdata_files" / f"trial_{trial_id}").mkdir(exist_ok=True, parents=True)
         
-        queue_path : Path = Path()
-        dest_path = Path(base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}" / "default")
-
-        if mode == "afl":
-            #print(trial_path)
-            if Path(trial_path / "default").exists(): 
-                queue_path = trial_path / "default"
-            elif Path(trial_path / "queue").exists():
-                queue_path = trial_path
-            else: 
-                queue_paths = list(trial_path.glob("**/queue/"))
-                if len(queue_paths) > 1:
-                    print(f"found more than 1 queue - assuming mode sileo!")
-                    mode = "sileo"
-                else:
-                    queue_path = queue_paths[0].parent
-
-        if mode == "sileo":
-            run_paths : list[Path] = list(trial_path.glob(f"**/run_*"))
-            for run in run_paths:
-                dest_path = Path(base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}" / run.name)
-                if run.is_dir():
-                    res = subprocess.run(["rsync", "-a", run.as_posix(), dest_path])
-                    #print(res.stdout)
-                    #print(res.stderr)
-            mode = "afl"
-            continue
         
-        print(f"Queue path: {queue_path}")
-        res = subprocess.run(["rsync", "-a", queue_path.as_posix() + "/", dest_path])
-        #print(res.stdout)
+        dest_path = Path(base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}")
+        res = subprocess.run(["rsync", "-a", trial_path.as_posix() + "/", dest_path])
+
+
+def mount_corpus(working_args, base_dir : Path, fuzzer_name: str, umount = False) -> None:
+    
+    corpus_base_path = working_args["corpus_path"]
+    trial_paths : list[Path] = list(corpus_base_path.glob(f"*{fuzzer_name}*"))
+    
+    if len(trial_paths) == 0:
+        # fuzzbench trials
+        print("Found fuzzbench trials")
+        trial_paths : list[Path] = list(corpus_base_path.glob(f"trial*"))
+
+    for trial_id, trial_path in enumerate(trial_paths):
         
+        
+        dest_path = Path(base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}")
+        if not umount:
+            print(f"creating trial: trial_{trial_id}")
+            (base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}").mkdir(exist_ok=True)
+            (base_dir / "profraw_files" / f"trial_{trial_id}").mkdir(exist_ok=True, parents=True)
+            (base_dir / "profdata_files" / f"trial_{trial_id}").mkdir(exist_ok=True, parents=True)
+            res = subprocess.run(["sudo", "mount", "-r", "-B", "-v", trial_path.as_posix() + "/", dest_path])
+        else:
+            res = subprocess.run(["sudo", "umount", "-v", dest_path])
 
 def extract_timestamp(file_path : Path) -> int:
     # Extract the timestamp from the file name
@@ -160,7 +158,7 @@ def calculate_cov_branches(json_data):
     traverse(json_data, add_st)
     return len(st)
 
-def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl") -> tuple[bool, Path]:
+def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
 
     trial = f"trial_{trial}"
     full_corpus : Path = base_dir / "tmp" / "full_corpus"
@@ -175,31 +173,23 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
     testcases_to_starttime: list[tuple] = []
     starttime = ""
     testcases = []
-    if fuzzer_mode == "afl":
-        if Path(full_corpus / trial / "default" / "queue").exists():
-            testcases: list[Path] = get_testcases(full_corpus / trial / "default" / "queue")
-            starttime: str = get_starttime(full_corpus / trial / "default" / "fuzzer_stats")
-        elif Path(full_corpus / trial / "queue").exists():
-            testcases: list[Path] = get_testcases(full_corpus / trial / "queue")
-            starttime: str = get_starttime(full_corpus / trial / "fuzzer_stats")
-        else:
-            print("Something went wrong, no queue directory found - testing sileo")
-            fuzzer_mode = "sileo"
-        
-        if starttime != "":
-            testcases_to_starttime = list(zip([starttime] * len(testcases), testcases))
-    
-    if fuzzer_mode == "sileo":
-        runs = list((full_corpus / trial).iterdir())
-        run_to_startime: dict[str,str] = {}
-        testcases = []
-        for run_id in range(0, len(runs)):
-            testcases = get_testcases(full_corpus / trial / f"run_{run_id}" / "default" / "queue")
-            starttime = get_starttime(full_corpus / trial / f"run_{run_id}" / "default" / "fuzzer_stats")
 
-            testcases_to_starttime.extend(list(zip([starttime] * len(testcases), testcases)))
-            run_to_startime.update({f"run_{run_id}":starttime})
+    queue_dirs : list[Path] = natsorted(list(Path(full_corpus / trial).glob("**/queue")))
+    fuzzer_stats_paths : list[Path] = natsorted(list(Path(full_corpus / trial).glob("**/fuzzer_stats")))
 
+    # there should be the same amount of fuzzer_stats files as queue_dirs otherwise, something is wrong
+    assert len(queue_dirs) > 0, f"Found no queue dirs: {len(queue_dirs)} -- {queue_dirs} "
+    assert len(fuzzer_stats_paths) > 0, f"Found no queue dirs: {len(fuzzer_stats_paths)} -- {fuzzer_stats_paths} "
+
+    if len(queue_dirs) != len(fuzzer_stats_paths):
+        print(f"Found a different amount of fuzzer_stats files and queue directorys: Queues: {len(queue_dirs)} -- stats: {len(fuzzer_stats_paths)}")
+        assert len(queue_dirs) == len(fuzzer_stats_paths), "different len of queue and fuzzer_stats"
+
+
+    for queue_dir, fuzzer_stats in zip(queue_dirs, fuzzer_stats_paths):
+        testcases = get_testcases(queue_dir)
+        starttime = get_starttime(fuzzer_stats)
+        testcases_to_starttime.extend(list(zip([starttime] * len(testcases), testcases)))
 
     print(f"Generating profraw data from testcases... ({trial} - {base_dir.name})")
     cov_times = []
@@ -208,7 +198,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
         starttime, testcase = testcase_to_starttime
 
         if i % 1000 == 0:
-            print(f"Processing Testcase {trial}:\t {i}/{len(testcases_to_starttime)}")
+            print(f"Processing Testcase {trial} - {base_dir.name}:\t {i}/{len(testcases_to_starttime)}")
 
         if "time" not in testcase.name:
             testcase_time = 0
@@ -267,7 +257,10 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
         
         timestamp_to_b_covered.append((timestamp, branch_count))
 
-        with open(f"{profdata_dir}/timestamp_to_b_covered.txt","a") as fd:
+        result_dir : Path = base_dir / "results" / trial
+        result_dir.mkdir(exist_ok=True, parents=True)
+
+        with open(f"{result_dir}/timestamp_to_b_covered.txt","a") as fd:
                 fd.write(f"{timestamp},{branch_count}\n")
 
         #with open(f"{profdata_dir}/report_{timestamp}.json","a") as fd:
@@ -289,6 +282,44 @@ def llvm_cov(working_args, trial: str, base_dir: Path, fuzzer_mode : str = "afl"
 
     return True, base_dir
 
+def get_crashes(base_dir : Path):
+    full_corpus : Path = base_dir / "tmp" / "full_corpus"
+    print(full_corpus)
+    crash_dirs : list = list(full_corpus.glob("**/crashes/"))
+    crashes : list[Path] = []
+    print(crash_dirs)
+    print(f"search crashes...")
+    for crash_dir in crash_dirs:
+        crashes.extend(get_testcases(crash_dir))
+    print(f"found crashes: {crashes}")
+
+    hashes : list[str] = []
+    hashed_crashes : list[Path] = []
+    ts_to_crash : list[tuple] = []
+
+    for crash in crashes:
+        crash_hash = get_hash(crash)
+
+        if crash_hash not in hashes:
+            hashed_crashes.append(crash)
+            hashes.append(crash_hash)
+        else:
+            continue
+
+        print(f"{len(hashed_crashes)} crashes found!")
+        crash_fs_path : Path = list(crash.parent.parent.glob("./**/fuzzer_stats"))[0]
+        print(f"found fuzzer_stats for crash: {crash_fs_path}")
+        cov_times = []
+        starttime = get_starttime(crash_fs_path)
+        crash_timestamp = crash.name.split(",time:")[1].split(",")[0]
+        ts_to_crash.append((int(starttime) + int(crash_timestamp) // 1000,crash))
+
+    return ts_to_crash
+
+
+def get_hash(file: Path) -> str:
+    with open(file, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()
 
 def merge_by_minute_single(files : list[Path], minute, trial):
     timestamp = int(datetime.strptime(minute, '%Y-%m-%d %H:%M').timestamp())
@@ -376,12 +407,15 @@ def create_directory_structure(base_dir: Path, skip_corpus = False):
     tmp_dir : Path = base_dir / "tmp"
     tmp_corpus_dir : Path  = tmp_dir  / "full_corpus"
     profraw_dir = base_dir / "profraw_files"
+    results_dir : Path = base_dir / "results"
 
     if skip_corpus and not tmp_corpus_dir.exists():
         print(f"it seems you want to skip the corpus copy, but there is no corpus at {tmp_corpus_dir}")
         exit()
 
     get_a_clean_dir(profraw_dir)
+    get_a_clean_dir(results_dir)
+
     get_a_clean_dir(tmp_corpus_dir,  not skip_corpus)
 
 
@@ -405,111 +439,6 @@ def gen_arguments(args : Namespace) -> dict[str,Any]:
 
     return {"mode" : mode, "corpus_path": corpus_path, "cov_bin": cov_bin_path, "trials" : trials, "target_name": target_name, "target_args": args.target_args}
 
-
-def calc_percentile(mode, skip_fill = False):
-    import numpy as np
-
-    base_dir = Path("coverage_analysis") / mode
-    ts_to_branch = []
-
-    profdata_dir : Path = base_dir / "profdata_files"
-    trials : list[Path] = list(profdata_dir.iterdir())
-    trial_results_branches: list[list] = []
-    trial_results_ts: list[list] = []
-    for trial in trials:
-        print(f"processing: {trial.name}")
-        ts_to_branch_file : Path =  profdata_dir / trial.name / "timestamp_to_b_covered.txt"
-        with open(ts_to_branch_file,"r") as fd:
-            ts_to_branch = fd.readlines()
-
-        ts_list = []
-        branches_covered_list = []
-        starttime = None
-        ts_relative = 0
-        for i in range(len(ts_to_branch)):
-
-            ts_to_branch_cov = ts_to_branch[i]
-            if i < len(ts_to_branch)-1:
-                ts_to_branch_cov_next = ts_to_branch[i+1]
-            else:
-                ts_to_branch_cov_next = ts_to_branch[i]
-
-            ts, branches_covered = ts_to_branch_cov.split(",")
-            ts_next, branches_covered_next = ts_to_branch_cov_next.split(",")
-            ts = int(ts)
-            ts_next = int(ts_next)
-            
-            while True:
-                if ts + 1 < ts_next:
-                    branches_covered_list.append(int(branches_covered))
-                    ts_list.append(ts_relative)
-                    ts_relative += 1
-                    ts += 1
-                else:
-                    branches_covered_list.append(int(branches_covered))
-                    ts_list.append(ts_relative)
-                    ts +=1
-                    break
-            ts_relative += 1
-        
-        if not skip_fill:
-            # fill the array with the last branch value
-            while ts_relative < 86400 or ts_relative > 86400:
-                if ts_relative < 86400:
-                    ts_relative += 1
-                    ts_list.append(ts_relative)
-                    branches_covered_list.append(branches_covered_list[-1])
-                else:
-                    ts_relative -= 1
-                    ts_list.pop()
-                    branches_covered_list.pop()
-
-        trial_results_branches.append(branches_covered_list)
-        trial_results_ts.append(ts_list)
-
-    all_trial_branches = []
-    max_num_entries: int = max([len(x) for x in trial_results_branches])
-    for idx in range(max_num_entries):
-        value_series = []
-        for trial_idx in range(len(trial_results_branches)):
-            value_series.append(trial_results_branches[trial_idx][idx])  
-        all_trial_branches.append(value_series)
-
-    lower = []
-    upper = []
-
-    for values in all_trial_branches:
-        interval = sorted(values)[2:8]
-        min_val = interval[0]
-        max_val = interval[-1]
-        lower.append(min_val)
-        upper.append(max_val)
-    median = np.median(all_trial_branches, axis=1)
-
-    return median, lower, upper
-
-
-def plot_coverage_to_time(_mode):
-   
-    print("plotting data")
-    
-    if _mode == "all":
-        modes = {"afl", "sileo"}
-    else:
-        modes = {_mode}
-
-    for mode in modes:
-        median, lower, upper = calc_percentile(mode)
-
-        plt.fill_between(np.arange(len(median)), lower, upper, alpha = 0.5) # type: ignore
-
-        plt.plot(np.arange(len(median)),median, alpha = 0.5, label=f"Median - {mode}")
-    print(_mode)
-    plt.xlabel("Time (s)")
-    plt.ylabel("Number of branches covered")
-    plt.legend()
-    plt.savefig(f"zz_plot_{_mode}.png")
-
 def random_rgb_color():
     return tuple(np.random.rand(3,))
 
@@ -523,8 +452,7 @@ def is_color_different(color, used_colors, threshold=0.5):
     return True
 
 
-def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 0, fuzzer_colors : dict = {}):
-    base_dir = Path("coverage_analysis")
+def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis")):
     done = False
 
     if not Path("plots").exists():
@@ -546,20 +474,22 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
 
     fig, ax = plt.subplots()
 
-    all_ts_data_paths: list[Path] = sorted(list(base_dir.glob("./**/profdata_files/*/timestamp_to_b_covered.txt")))
+    all_ts_data_paths: list[Path] = sorted(list(base_dir.glob(f"*/results/*/timestamp_to_b_covered.txt")))
     #print(all_ts_data_paths)
     if len(all_ts_data_paths) == 0:
-        print("no timestamp files found")
+        print("no timestamp files found yet")
         return
+    else:
+        print(f"Found timestamps")
         
     # print(f"data paths: {all_ts_data_paths}")
     # fuzzer_names = set()
     if len(fuzzer_names) == 0:
-        print(f"extract fuzzer name from path with regex: [0-9].[0-9]*c")
+        print(f"extract fuzzer name from path with regex: {regex}")
         for ts_data_path in all_ts_data_paths:
-            name_match = re.search("[0-9].[0-9]*c", ts_data_path.as_posix())
+            name_match = re.search(regex, ts_data_path.as_posix())
             if name_match != None:
-                #print(f"name match: {name_match.group(0)}")
+                print(f"name match: {name_match.group(0)}")
                 if name_match.group(0) in fuzzer_names:
                     continue
                 else:
@@ -568,16 +498,33 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
                     print(f"found stats for {fuzzer_name}")
             else:
                 fuzzer_name = ""
+                print(f"no match found for {regex}")
                 continue
 
     for fuzzer_name in sorted(fuzzer_names):
+        fuzzer_name = fuzzer_name.strip()
         # all trial paths of fuzzer with name...
         # coverage_analysis_old/afl/profdata_files/trial_0/timestamp_to_b_covered.txt
-        all_trial_paths = sorted(list(base_dir.glob(f"./{fuzzer_name}/profdata_files/*/timestamp_to_b_covered.txt")))
+        all_trial_paths = sorted(list(base_dir.glob(f"{fuzzer_name}/results/*/timestamp_to_b_covered.txt")))
+        ts_to_crash_file: Path = base_dir / fuzzer_name / "results/timestamp_to_crash.txt"
+
+        ts_to_crashes = []
+        if ts_to_crash_file.exists():
+            with open(ts_to_crash_file.as_posix(),"r") as fd:
+                ts_to_crashes: list[str] = fd.readlines()
+
+        ts_crash_list: list[int] = []
+
+        for ts_to_crash in ts_to_crashes:
+            ts =  ts_to_crash.split(",")[0] 
+            # ts_to_crash_dict.update({ts : crash})
+            ts_crash_list.append(int(ts))
 
         trial_results_branches: list[list] = []
         trial_results_ts: list[list] = []
 
+        ts_relative_crash_list = []
+        
         for ts_to_branch_file in all_trial_paths:
             ts_to_branch = []
             with open(ts_to_branch_file.as_posix(),"r") as fd:
@@ -599,6 +546,11 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
                 ts_next = int(ts_next)
                 
                 while True:
+                    if ts in ts_crash_list:
+                        #print(f"found {ts} in {ts_crash_list}")
+                        ts_relative_crash_list.append(ts_relative)
+                        ts_crash_list.remove(ts)
+                        
                     if ts + 1 < ts_next:
                         branches_covered_list.append(int(branches_covered))
                         ts_list.append(ts_relative)
@@ -640,7 +592,7 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
 
         lower = []
         upper = []
-
+        plot_bands = False
         try:
             for values in all_trial_branches:
                 d_interval = sorted(values)[2:8]
@@ -648,6 +600,7 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
                 max_val = d_interval[-1]
                 lower.append(min_val)
                 upper.append(max_val)
+                plot_bands = True
         except Exception as e:
             print("Seems not enough values to unpack")
             print(e)
@@ -657,8 +610,20 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
             fuzzer_color = fuzzer_colors[fuzzer_name]
         else:
             fuzzer_color = random_rgb_color()
-        #ax.fill_between(np.arange(len(median)), lower, upper, alpha = 0.2) # type: ignore
-        ax.plot(np.arange(len(median)), median, color=fuzzer_color, alpha = 0.65, label=f"Median-{fuzzer_name}")
+
+        max_time = len(upper)
+        if show_bands and plot_bands:
+            ax.fill_between(np.arange(len(median[:max_time])), lower[:max_time], upper[:max_time], alpha = 0.2) # type: ignore
+        ax.plot(np.arange(max_time), median[:max_time], color=fuzzer_color, alpha = 0.65, label=f"Median-{fuzzer_name}")
+        
+        times = list(np.arange(max_time))
+        
+        for crash_time in ts_relative_crash_list:
+            if int(crash_time) in times:
+                index = times.index(crash_time)
+
+                plt.annotate('$\U00002629$', (crash_time, median[index]), color=fuzzer_color, textcoords="offset points", xytext=(0, -2), ha='center')
+                # $\U0001F601$
         done = True
 
     if done:
@@ -677,6 +642,13 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
         print("Plotting failed")
         return False
   
+def gif_up():
+    print("Generating gif!")
+    if Path("plots/incremental/").exists:
+        subprocess.call(["convert", "-delay", "10", "-loop", "0", "plots/incremental/*.png", "/plots/fuzzer.gif"])
+        print("Done --- fuzzer.gif")
+    else:
+        print("no path plots/incremental does not exist")
 
 def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str] = set(), skip_fill = True):
 
@@ -695,6 +667,7 @@ def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str]
 
     while not stop_event.is_set():
         try:
+            print("plotting...")
             plot_while_calc(fuzzer_names, skip_fill,cnt, fuzzer_colors=fuzzer_colors)
         except Exception as e:
             tb = traceback.format_exc()
@@ -705,16 +678,40 @@ def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str]
         cnt += 1
         time.sleep(interval)
 
+def process_crashes(base_dir) -> None:
+    crash_res_file = Path(base_dir / "results/timestamp_to_crash.txt")
+    ts_to_crash : list[tuple]  = get_crashes(base_dir)
+    
+    print("Processing crash")
+
+    result_dir : Path = base_dir / "results"
+    result_dir.mkdir(exist_ok=True)
+    if not crash_res_file.exists():     
+        print("Saving crashes")
+        with open(crash_res_file,"w") as fd:
+            for ts, crash in ts_to_crash:
+                fd.write(f"{ts},{crash}\n")
+    else:
+        print("crash results already exists!")
+
 
 def process_trial(trial, working_args, base_dir):
     print(f"Processing trial: {trial} on base dir:{base_dir}")
+    
+    process_crashes(base_dir)
+
     return llvm_cov(working_args, str(trial), base_dir)
 
-def run_calc(num_threads, working_args, all_jobs):
+def run_calc(num_threads, working_args, all_jobs, chunk_size = 20):
     futures = {}
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_threads-1) as executor:
-        futures = {executor.submit(process_trial, trial, working_args, base_dir) for base_dir, trial in all_jobs}
-        concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
+        trial_chunks = [all_jobs[i:i + chunk_size] for i in range(0, len(all_jobs), chunk_size)]
+
+        # Process each chunk of trials
+        for chunk in trial_chunks:
+            futures = {executor.submit(process_trial, trial, working_args, base_dir) for base_dir, trial in chunk}
+            concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
+
 
 def run_calc_and_periodic_plot(executor, main_function, periodic_function, fuzzer_names : set[str], main_args, interval_seconds=60):
     stop_event = threading.Event()
@@ -739,6 +736,9 @@ def run_calc_and_periodic_plot(executor, main_function, periodic_function, fuzze
         stop_event.set()
         # Wait for the periodic function thread to complete
         periodic_thread.join()
+        
+        # create a gif from incremental files
+        gif_up()
 
 def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser: ArgumentParser = ArgumentParser(description="Controller for AFL++ restarting instances")
@@ -754,16 +754,22 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--res", action="store_true", default=False, help="Print results of mode")
     parser.add_argument("--plot", action="store_true", default=False, help="Plot results of mode")
     parser.add_argument("--cplot", action="store_true", default=False, help="Plot results of mode")
+    parser.add_argument("--gif", action="store_true", default=False, help="Create a gif from plot/incremental/*.png")
     parser.add_argument("--skip", action="store_true", default=False, help="Skip corpus copy. WARNING: rsync will anyways check for files left")
+    parser.add_argument("--testing", action="store_true", default=False, help="Testing Mode (no multiprocessing)")
+    parser.add_argument("--show_bands", action="store_true", default=False, help="Show percentile bands")
     parser.add_argument("--regex", type=str, default="", help="Regex to get specific filename identifier: e.g.\n\t\tdirectory: afl_0 afl_1 ...\n\t\tregex: afl_[0-9]*")
     parser.add_argument("--strip", type=str, default="", help="Strip the resulting fuzzer names by given character")
     parser.add_argument("--threads", type=int, default=80, help="Maximum number of threads")
+    parser.add_argument("--paralell_trials", type=int, default=20, help="Maximum number of paralell trials / runs to calculate (to reduce disk usage)")
+    parser.add_argument("--crashes", action="store_true", default=False, help="Get crashes")
+    parser.add_argument("--regcheck", action="store_true", default=False, help="List found fuzzers by your given regex")
     
     return parser.parse_args(raw_args)
 
 
 def main(raw_args: Optional[Sequence[str]] = None):
-    global skip_corpus, mode
+    global skip_corpus, mode, show_bands, regex
     
     args: Namespace = parse_arguments(raw_args)
 
@@ -771,15 +777,24 @@ def main(raw_args: Optional[Sequence[str]] = None):
     mode = working_args["mode"]
     skip_corpus = args.skip
     fuzzer_info = []
+    show_bands = args.show_bands
+
+    regex = args.regex
 
     if skip_corpus:
         print("Skipping corpus copy!!\nI hope you know what you are doing and you have the correct corpus here... 5sec to think about")
         time.sleep(5)
 
+    if args.regcheck:
+        fuzzer_names = get_all_fuzzer(working_args, cstrip=args.strip)
+        print("found the following fuzzers")
+        print(fuzzer_names)
+        exit()
+
 
     if args.calc:
 
-        fuzzer_names = get_all_fuzzer(working_args,regex=args.regex, cstrip=args.strip)
+        fuzzer_names = get_all_fuzzer(working_args, cstrip=args.strip)
         print("found the following fuzzers")
         print(fuzzer_names)
 
@@ -789,20 +804,25 @@ def main(raw_args: Optional[Sequence[str]] = None):
         for i, fuzzer_name in enumerate(fuzzer_names):
             print(f"Fuzzer: {fuzzer_name}")
             base_dir = Path("coverage_analysis") / fuzzer_name
+            mount_corpus(working_args, base_dir, fuzzer_name, umount=True)
             create_directory_structure(base_dir, skip_corpus)
-            copy_corpus(working_args, base_dir, fuzzer_name)
+            
+            mount_corpus(working_args, base_dir, fuzzer_name)
+            #copy_corpus(working_args, base_dir, fuzzer_name)
             fuzzer_info.append(base_dir)
             all_jobs.extend(list(zip([base_dir] * num_trials, range(num_trials))))
             print(f"Done: {i+1}/{len(fuzzer_names)}\n")
 
         # testing
-        #for base_dir, trial in all_jobs:
-        #    process_trial(0, working_args, base_dir)
-
-        main_args = (args.threads, working_args, all_jobs)
-        run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, interval_plot_thread, fuzzer_names, main_args, interval_seconds=90)
-            
+        if args.testing:
+            for base_dir, trial in all_jobs:
+                process_trial(trial, working_args, base_dir)
+        else:    
+            main_args = (args.threads, working_args, all_jobs, args.paralell_trials)
+            run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, interval_plot_thread, fuzzer_names, main_args, interval_seconds=30)
+                
         print("All trials processed.")
+
     
     if args.res:
         if working_args["mode"] == "all":
@@ -812,11 +832,14 @@ def main(raw_args: Optional[Sequence[str]] = None):
             base_dir = Path("coverage_analysis") / "sileo"
             get_results(base_dir)
 
-    if args.plot:
-        plot_coverage_to_time(args.mode)
-
     if args.cplot:
-        plot_while_calc({args.fuzzer_names})
+        fuzzer_names = args.fuzzer_names.split(",")
+        print(fuzzer_names)
+        
+        plot_while_calc(set(fuzzer_names),base_dir = args.corpus)
+
+    if args.gif:
+        gif_up()
 
 
 if __name__ == "__main__":
