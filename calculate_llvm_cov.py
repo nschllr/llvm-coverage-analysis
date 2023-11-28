@@ -28,10 +28,12 @@ from typing import Any, Dict, List, Optional, Sequence
 import re
 import time
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import numpy as np
 import subprocess
 import hashlib
 from natsort import natsorted
+import random
 
 CONTAINER_NAME = "llvm_cov_analysis"
 skip_corpus = False
@@ -283,15 +285,16 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
     return True, base_dir
 
 def get_crashes(base_dir : Path):
+    print("     Get crashes...")
     full_corpus : Path = base_dir / "tmp" / "full_corpus"
     print(full_corpus)
     crash_dirs : list = list(full_corpus.glob("**/crashes/"))
     crashes : list[Path] = []
-    print(crash_dirs)
-    print(f"search crashes...")
+    print(f"Number of crash dirs: {len(crash_dirs)}")
+
     for crash_dir in crash_dirs:
         crashes.extend(get_testcases(crash_dir))
-    print(f"found crashes: {crashes}")
+    print(f"found crashes: {len(crashes)}")
 
     hashes : list[str] = []
     hashed_crashes : list[Path] = []
@@ -465,12 +468,18 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
 
     if len(fuzzer_names) > 0 and len(fuzzer_colors) == 0:
         for fuzzer_name in fuzzer_names:
-            for color_idx in range(len(fuzzer_names)): 
-                fuzzer_color = random_rgb_color()    
-                # Check if the color is sufficiently different from used colors
-                while not is_color_different(fuzzer_color, used_colors, threshold=0.5):
-                    fuzzer_color = random_rgb_color()
+            if len(fuzzer_names) < 10:
+                fuzzer_color = random.choice(list(mcolors.TABLEAU_COLORS.keys()))
+                while fuzzer_color in list(fuzzer_colors.values()):
+                    fuzzer_color = random.choice(list(mcolors.TABLEAU_COLORS.keys()))
                 fuzzer_colors.update({fuzzer_name:fuzzer_color})
+            else:
+                for color_idx in range(len(fuzzer_names)): 
+                    fuzzer_color = random_rgb_color()    
+                    # Check if the color is sufficiently different from used colors
+                    while not is_color_different(fuzzer_color, used_colors, threshold=0.5):
+                        fuzzer_color = random_rgb_color()
+                    fuzzer_colors.update({fuzzer_name:fuzzer_color})
 
     fig, ax = plt.subplots()
 
@@ -645,7 +654,7 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
 def gif_up():
     print("Generating gif!")
     if Path("plots/incremental/").exists:
-        subprocess.call(["convert", "-delay", "10", "-loop", "0", "plots/incremental/*.png", "/plots/fuzzer.gif"])
+        subprocess.call(["convert", "-delay", "10", "-loop", "0", "plots/incremental/*.png", "plots/fuzzer.gif"])
         print("Done --- fuzzer.gif")
     else:
         print("no path plots/incremental does not exist")
@@ -656,14 +665,27 @@ def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str]
     fuzzer_colors = {}
     used_colors = set()
 
-    if len(fuzzer_names) > 0:
-        for fuzzer_name in fuzzer_names:
-            for _ in range(len(fuzzer_names)): 
-                fuzzer_color = random_rgb_color()    
-                # Check if the color is sufficiently different from used colors
-                while not is_color_different(fuzzer_color, used_colors, threshold=0.75):
-                    fuzzer_color = random_rgb_color()
-                fuzzer_colors.update({fuzzer_name:fuzzer_color})
+    try:
+        if len(fuzzer_names) > 0:
+            for fuzzer_name in fuzzer_names:
+                if len(fuzzer_names) < 10:
+                    fuzzer_color = random.choice(list(mcolors.TABLEAU_COLORS.keys()))
+                    while fuzzer_color in list(fuzzer_colors.values()):
+                        fuzzer_color = random.choice(list(mcolors.TABLEAU_COLORS.keys()))
+                    fuzzer_colors.update({fuzzer_name:fuzzer_color})
+                else:
+                    for _ in range(len(fuzzer_names)): 
+                        fuzzer_color = random_rgb_color()    
+                        # Check if the color is sufficiently different from used colors
+                        while not is_color_different(fuzzer_color, used_colors, threshold=0.75):
+                            fuzzer_color = random_rgb_color()
+                    fuzzer_colors.update({fuzzer_name:fuzzer_color})
+    except Exception:
+            tb = traceback.format_exc()
+            print("Something went wrong!")
+            with open("error.txt", "a") as fd:
+                fd.write(str(tb))
+            exit()
 
     while not stop_event.is_set():
         try:
@@ -678,7 +700,8 @@ def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str]
         cnt += 1
         time.sleep(interval)
 
-def process_crashes(base_dir) -> None:
+def process_crashes(base_dir : Path) -> None:
+    print("  Processing crashes...")
     crash_res_file = Path(base_dir / "results/timestamp_to_crash.txt")
     ts_to_crash : list[tuple]  = get_crashes(base_dir)
     
@@ -695,22 +718,49 @@ def process_crashes(base_dir) -> None:
         print("crash results already exists!")
 
 
-def process_trial(trial, working_args, base_dir):
+def process_trial(trial : int, working_args, base_dir : Path):
     print(f"Processing trial: {trial} on base dir:{base_dir}")
     
     process_crashes(base_dir)
 
     return llvm_cov(working_args, str(trial), base_dir)
 
-def run_calc(num_threads, working_args, all_jobs, chunk_size = 20):
-    futures = {}
-    with concurrent.futures.ProcessPoolExecutor(max_workers=num_threads-1) as executor:
-        trial_chunks = [all_jobs[i:i + chunk_size] for i in range(0, len(all_jobs), chunk_size)]
+def run_calc(num_threads : int, working_args, all_jobs, chunk_size : int = 20):
 
-        # Process each chunk of trials
-        for chunk in trial_chunks:
-            futures = {executor.submit(process_trial, trial, working_args, base_dir) for base_dir, trial in chunk}
-            concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_threads-1) as executor:
+        trial_chunks_iter = iter(all_jobs[chunk_size:])
+
+        # Submit the first chunk of trials asynchronously
+        futures_list = [executor.submit(process_trial, trial, working_args, base_dir) for base_dir, trial in all_jobs[:chunk_size]]
+
+        # Iterate over completed futures and submit the next trial from the next chunk
+        for completed_future in concurrent.futures.as_completed(futures_list):
+            try:
+                completed_future.result()  # Get the result to propagate exceptions
+            except Exception as e:
+                print(f"Exception in processing: {e}")
+                tb = traceback.format_exc()
+                print("Something went wrong!")
+                with open("error_trial.txt", "a") as fd:
+                    fd.write(str(tb))
+
+            # Submit the next trial from the next chunk, if available
+            try:
+                with open("iterator_trial.txt", "a") as fd:
+                    fd.write(f"{time.time()} -- next trial!")
+                next_chunk = next(trial_chunks_iter)
+                print(f"Next trial {next_chunk}")
+                next_trial_future = executor.submit(process_trial, next_chunk[1], working_args, next_chunk[0])
+                futures_list.append(next_trial_future)
+            except StopIteration:
+                print("Iteration done")
+
+
+def run_calc_single(num_threads, working_args, all_jobs, chunk_size = 20):
+   futures = {}
+   with concurrent.futures.ProcessPoolExecutor(max_workers=num_threads-1) as executor:
+        futures = {executor.submit(process_trial, trial, working_args, base_dir) for base_dir, trial in all_jobs}
+        concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
 
 
 def run_calc_and_periodic_plot(executor, main_function, periodic_function, fuzzer_names : set[str], main_args, interval_seconds=60):
