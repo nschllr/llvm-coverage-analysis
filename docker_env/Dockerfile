@@ -16,7 +16,8 @@ RUN apt install -y \
     gcc gdb strace ltrace tree nasm \
     ninja-build bear cmake pkg-config libglib2.0-dev libfdt-dev libpixman-1-dev zlib1g-dev \
     patchelf python3 python3-pip python3-dev automake cmake flex bison libglib2.0-dev libpixman-1-dev nano \
-    python3-setuptools cargo libgtk-3-dev texinfo tmux lsb-release wget software-properties-common gnupg
+    python3-setuptools cargo libgtk-3-dev texinfo tmux lsb-release wget software-properties-common gnupg \
+    imagemagick
 
 
 RUN apt install -y lld-14 llvm-14 llvm-14-dev clang-14 || apt install -y lld llvm llvm-dev clang
@@ -39,7 +40,7 @@ RUN chown -R ${USER_UID}:${USER_GID} /project
 WORKDIR /tmp/
 RUN git clone https://github.com/AFLplusplus/AFLplusplus.git
 WORKDIR /tmp/AFLplusplus
-RUN git checkout cbfa5207ba2853e249ffb256d99880368ee224e0
+RUN git checkout ad4b7274766418d2006177edebf0d242b49c5fef
 
 RUN LLVM_CONFIG=llvm-config-14 make all -j
 RUN make install
@@ -51,6 +52,8 @@ WORKDIR /home/user/
 # Install zsh
 RUN sh -c "$(wget -O- https://raw.githubusercontent.com/deluan/zsh-in-docker/master/zsh-in-docker.sh)"
 RUN export LLVM_CONFIG=llvm-config-14
+
+RUN pip install inotify psutil matplotlib natsort
 
 ENV AFL_NO_AFFINITY=1
 ENV AFL_DISABLE_TRIM=1

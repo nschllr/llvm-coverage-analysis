@@ -459,7 +459,7 @@ def is_color_different(color, used_colors, threshold=0.5):
     return True
 
 
-def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis")):
+def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False):
     done = False
 
     if not Path("plots").exists():
@@ -519,19 +519,19 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
         # all trial paths of fuzzer with name...
         # coverage_analysis_old/afl/profdata_files/trial_0/timestamp_to_b_covered.txt
         all_trial_paths = sorted(list(base_dir.glob(f"{fuzzer_name}/results/*/timestamp_to_b_covered.txt")))
-        # ts_to_crash_file: Path = base_dir / fuzzer_name / "results/timestamp_to_crash.txt"
+        ts_to_crash_file: Path = base_dir / fuzzer_name / "results/timestamp_to_crash.txt"
 
-        # ts_to_crashes = []
-        # if ts_to_crash_file.exists():
-        #     with open(ts_to_crash_file.as_posix(),"r") as fd:
-        #         ts_to_crashes: list[str] = fd.readlines()
+        ts_to_crashes = []
+        if ts_to_crash_file.exists() and plot_crashes:
+            with open(ts_to_crash_file.as_posix(),"r") as fd:
+                ts_to_crashes: list[str] = fd.readlines()
 
         ts_crash_list: list[int] = []
 
-        # for ts_to_crash in ts_to_crashes:
-        #     ts =  ts_to_crash.split(",")[0] 
-        #     # ts_to_crash_dict.update({ts : crash})
-        #     ts_crash_list.append(int(ts))
+        for ts_to_crash in ts_to_crashes:
+            ts =  ts_to_crash.split(",")[0] 
+            # ts_to_crash_dict.update({ts : crash})
+            ts_crash_list.append(int(ts))
 
         trial_results_branches: list[list] = []
         trial_results_ts: list[list] = []
@@ -559,10 +559,10 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
                 ts_next = int(ts_next)
                 
                 while True:
-                    # if ts in ts_crash_list:
-                    #     #print(f"found {ts} in {ts_crash_list}")
-                    #     ts_relative_crash_list.append(ts_relative)
-                    #     ts_crash_list.remove(ts)
+                    if ts in ts_crash_list:
+                        #print(f"found {ts} in {ts_crash_list}")
+                        ts_relative_crash_list.append(ts_relative)
+                        ts_crash_list.remove(ts)
                         
                     if ts + 1 < ts_next:
                         branches_covered_list.append(int(branches_covered))
@@ -631,12 +631,12 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
         
         times = list(np.arange(max_time))
         
-        # for crash_time in ts_relative_crash_list:
-        #     if int(crash_time) in times:
-        #         index = times.index(crash_time)
+        for crash_time in ts_relative_crash_list:
+            if int(crash_time) in times:
+                index = times.index(crash_time)
 
-        #         plt.annotate('$\U00002629$', (crash_time, median[index]), color=fuzzer_color, textcoords="offset points", xytext=(0, -2), ha='center')
-        #         # $\U0001F601$
+                plt.annotate('$\U00002629$', (crash_time, median[index]), color=fuzzer_color, textcoords="offset points", xytext=(0, -2), ha='center')
+                # $\U0001F601$
         done = True
 
     if done:
@@ -663,7 +663,7 @@ def gif_up():
     else:
         print("no path plots/incremental does not exist")
 
-def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str] = set(), skip_fill = True):
+def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str] = set(), skip_fill = True, plot_crashes : bool = False):
 
     cnt = 0
     fuzzer_colors = {}
@@ -694,7 +694,7 @@ def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str]
     while not stop_event.is_set():
         try:
             print("plotting...")
-            plot_while_calc(fuzzer_names, skip_fill,cnt, fuzzer_colors=fuzzer_colors)
+            plot_while_calc(fuzzer_names, skip_fill,cnt, fuzzer_colors=fuzzer_colors, plot_crashes=plot_crashes)
         except Exception as e:
             tb = traceback.format_exc()
             print("Something went wrong!")
@@ -879,12 +879,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
 
     
     if args.res:
-        if working_args["mode"] == "all":
-            base_dir = Path("coverage_analysis") / "afl"
-            get_results(base_dir)
-            print("------------------------------------")
-            base_dir = Path("coverage_analysis") / "sileo"
-            get_results(base_dir)
+        print("not implemented")
 
     if args.cplot:
         fuzzer_names = args.fuzzer_names.split(",")

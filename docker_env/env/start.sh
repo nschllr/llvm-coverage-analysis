@@ -1,7 +1,7 @@
 #!/bin/bash
 
-set -eu
-set -o pipefail
+#set -eu
+#set -o pipefail
 cd $(dirname $0)
 
 source config.sh
@@ -63,7 +63,6 @@ cmd="docker run -t -d --privileged \
     --ulimit msgqueue=2097152000 \
     --shm-size=16G \
     --name $CONTAINER_NAME \
-    -e AFL_NO_AFFINITY=1 \
     -e AFL_DISABLE_TRIM=1 \
     -e AFL_FAST_CAL=1 \
     -e AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 \
@@ -95,6 +94,7 @@ shift
 shift
 CMD=${*:-}
 if [ -n "$CMD" ]; then
+    cmd+=" --workdir /home/user/$NAME "
     cmd+=" ${IMAGE_NAME} $CMD"
     echo "$cmd"
     $cmd
