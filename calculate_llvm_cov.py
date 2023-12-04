@@ -608,7 +608,7 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
         plot_bands = False
         try:
             for values in all_trial_branches:
-                d_interval = sorted(values)[2:8]
+                d_interval = sorted(values)[3:7]
                 min_val = d_interval[0]
                 max_val = d_interval[-1]
                 lower.append(min_val)
@@ -624,9 +624,12 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
         else:
             fuzzer_color = random_rgb_color()
 
+        median = np.insert(median,0,0)
+        upper = np.insert(upper,0,0)
+        lower = np.insert(lower,0,0)
         max_time = len(upper)
         if show_bands and plot_bands:
-            ax.fill_between(np.arange(len(median[:max_time])), lower[:max_time], upper[:max_time], alpha = 0.2) # type: ignore
+            ax.fill_between(np.arange(len(median[:max_time])), lower[:max_time], upper[:max_time], color=fuzzer_color, alpha = 0.15) # type: ignore
         ax.plot(np.arange(max_time), median[:max_time], color=fuzzer_color, alpha = 0.65, label=f"Median-{fuzzer_name}")
         
         times = list(np.arange(max_time))
@@ -647,7 +650,9 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
 
         plt.xlabel("Time (s)")
         plt.ylabel("Number of branches covered")
+        ax.set_ylim(ymin=0)
         plt.savefig(f"plots/all_median.png",dpi=150)
+        #plt.savefig(f"plots/all_median.svg",format="svg")
         plt.savefig(f"plots/incremental/median_{img_cnt:04d}.png",dpi=150)
 
         return True
@@ -802,7 +807,7 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--target", type=str, default="objdump", help="Target name")
     parser.add_argument("--cov_bin", type=Path, default=None, help="Path to llvm compiled coverage binary")
     parser.add_argument("--mode", type=str, default="afl", help="Set mode sileo | afl")
-    parser.add_argument("--fuzzer_names", type=str, default="afl", help="Fuzzer names in quotes")
+    parser.add_argument("--fuzzer_names", type=str, default="", help="Fuzzer names in quotes")
     parser.add_argument("--target_args", type=str, default="", help="Target arguments, use quotes")
     parser.add_argument("--calc", action="store_true", default=False, help="Calculate coverage")
     parser.add_argument("--res", action="store_true", default=False, help="Print results of mode")
@@ -882,10 +887,14 @@ def main(raw_args: Optional[Sequence[str]] = None):
         print("not implemented")
 
     if args.cplot:
-        fuzzer_names = args.fuzzer_names.split(",")
+        if args.fuzzer_names != "":
+            fuzzer_names = args.fuzzer_names.split(",")
+        else:
+            fuzzer_names = get_all_fuzzer(working_args, cstrip=args.strip)
+
         print(fuzzer_names)
         
-        plot_while_calc(set(fuzzer_names),base_dir = args.corpus)
+        plot_while_calc(set(fuzzer_names), plot_crashes=args.crashes)
 
     if args.gif:
         gif_up()
