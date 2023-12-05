@@ -41,6 +41,7 @@ mode = ""
 show_bands = False
 regex = ""
 
+
 def get_testcases(corpus_path: Path) -> list[Path]:
     print(f"Gathering testcases from {corpus_path.as_posix()}")
     testcases = sorted(list(corpus_path.glob("id:*")))
@@ -69,6 +70,41 @@ def get_starttime(fuzzer_stats_path : Path) -> str:
             print(f"Error: no starttime found -- {fuzzer_stats_path} / {start_time_file}")
     return ""
 
+def get_afl_version(fuzzer_stats_path : Path) -> str:
+    with open(fuzzer_stats_path, "r") as fd:
+        lines: list[str] = fd.readlines()
+
+    afl_version = ""
+    if len(lines) > 0:
+        for line in lines:
+            if "afl_version" in line:
+                afl_version: str = line.split(":")[1].strip()
+                #print(f"starttime: {starttime}")
+                return afl_version
+
+    print(f"No version found! -- {fuzzer_stats_path}")
+    return ""
+
+def check_legacy_afl(afl_version : str) -> bool:
+
+    # for afl++ versions
+    if "++" in afl_version:
+        re_match: re.Match[str] | None = re.search("[0-9]*\.[0-9]*", afl_version)
+        if re_match is not None:
+            stripped_version : float = float(re_match.group(0))
+            if stripped_version > 2.52:
+                return True
+        else:
+            # this shouldn't happen 
+            print(f"#### RE MATCH is None!! --> afl_version: {afl_version} ########")
+            return False
+    return False
+
+
+
+def get_testcase_cov_time(testcase : Path, starttime : str, afl_version : str) -> int:
+    return 0
+
 
 def get_all_fuzzer(working_args, cstrip = ""):
     corpus_base_path = working_args["corpus_path"]
@@ -76,28 +112,6 @@ def get_all_fuzzer(working_args, cstrip = ""):
     fuzzer_names : list = sorted(list(set(match.group(0).strip(cstrip) for fuzzer_entry in all_fuzzers if (match := re.search(regex, fuzzer_entry.name)) is not None)))
 
     return fuzzer_names
-
-
-def copy_corpus_old(working_args, base_dir : Path, fuzzer_name: str) -> None:
-    
-    corpus_base_path = working_args["corpus_path"]
-    trial_paths : list[Path] = list(corpus_base_path.glob(f"*{fuzzer_name}*"))
-    
-    if len(trial_paths) == 0:
-        # fuzzbench trials
-        print("Found fuzzbench trials")
-        trial_paths : list[Path] = list(corpus_base_path.glob(f"trial*"))
-
-    for trial_id, trial_path in enumerate(trial_paths):
-        print(f"creating trial: trial_{trial_id}")
-        (base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}").mkdir(exist_ok=True)
-        (base_dir / "profraw_files" / f"trial_{trial_id}").mkdir(exist_ok=True, parents=True)
-        (base_dir / "profdata_files" / f"trial_{trial_id}").mkdir(exist_ok=True, parents=True)
-        
-        
-        dest_path = Path(base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}")
-        res = subprocess.run(["rsync", "-a", trial_path.as_posix() + "/", dest_path])
-
 
 def mount_corpus(working_args, base_dir : Path, fuzzer_name: str, umount = False) -> None:
     
@@ -187,26 +201,40 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
         print(f"Found a different amount of fuzzer_stats files and queue directorys: Queues: {len(queue_dirs)} -- stats: {len(fuzzer_stats_paths)}")
         assert len(queue_dirs) == len(fuzzer_stats_paths), "different len of queue and fuzzer_stats"
 
+    legacy_afl : bool | None = None
 
     for queue_dir, fuzzer_stats in zip(queue_dirs, fuzzer_stats_paths):
-        testcases = get_testcases(queue_dir)
-        starttime = get_starttime(fuzzer_stats)
-        testcases_to_starttime.extend(list(zip([starttime] * len(testcases), testcases)))
+        testcases: list[Path] = get_testcases(queue_dir)
+        starttime: str = get_starttime(fuzzer_stats)
+        afl_version: str = get_afl_version(fuzzer_stats)
+
+        # asume that all queues of the fuzzer have the same afl version -- so the first one will do it
+        if legacy_afl is None:
+            legacy_afl = check_legacy_afl(afl_version)
+
+        testcases_to_starttime.extend(list(zip([afl_version] * len(testcases), [starttime] * len(testcases), testcases)))
 
     print(f"Generating profraw data from testcases... ({trial} - {base_dir.name})")
     cov_times = []
 
     for i, testcase_to_starttime in enumerate(testcases_to_starttime):
-        starttime, testcase = testcase_to_starttime
+        afl_version, starttime, testcase = testcase_to_starttime
 
         if i % 1000 == 0:
             print(f"Processing Testcase {trial} - {base_dir.name}:\t {i}/{len(testcases_to_starttime)}")
 
-        if "time" not in testcase.name:
-            testcase_time = 0
+        cov_time: int = get_testcase_cov_time(testcase, starttime, afl_version)
+
+        if legacy_afl:
+            testcase_time = int(os.stat(testcase).st_mtime) - int(starttime)
+            cov_time = testcase_time
         else:
-            testcase_time = testcase.name.split(",time:")[1].split(",")[0]
-        cov_time = int(starttime) + int(testcase_time) // 1000
+            # some afl++ version did not assign a time to "orig:" testcases
+            if "time" not in testcase.name:
+                testcase_time = 0
+            else:
+                testcase_time = testcase.name.split(",time:")[1].split(",")[0]
+            cov_time = int(starttime) + int(testcase_time) // 1000
         cov_times.append(cov_time)
         profraw_file = f"{profraw_dir}/llvm_{i:08d}_ts:{cov_time}.profraw"
         # print(f"profraw_file:",profraw_file)
@@ -459,7 +487,7 @@ def is_color_different(color, used_colors, threshold=0.5):
     return True
 
 
-def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False):
+def calc_plot_data(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False):# -> dict[str, Dict[Any, Any]]:
     done = False
 
     if not Path("plots").exists():
@@ -491,7 +519,7 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
     #print(all_ts_data_paths)
     if len(all_ts_data_paths) == 0:
         print("no timestamp files found yet")
-        return
+        return {}
     else:
         print(f"Found timestamps")
         
@@ -513,6 +541,8 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
                 fuzzer_name = ""
                 print(f"no match found for {regex}")
                 continue
+
+    fuzzer_to_cov : Dict[str, Dict] = {}
 
     for fuzzer_name in sorted(fuzzer_names):
         fuzzer_name = fuzzer_name.strip()
@@ -578,15 +608,16 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
 
                 if not skip_fill:
                     # fill the array with the last branch value
-                    while ts_relative < 86400 or ts_relative > 86400:
-                        if ts_relative < 86400:
-                            ts_relative += 1
-                            ts_list.append(ts_relative)
-                            branches_covered_list.append(branches_covered_list[-1])
-                        else:
-                            ts_relative -= 1
-                            ts_list.pop()
-                            branches_covered_list.pop()
+                    pass
+                    # while ts_relative < 86400 or ts_relative > 86400:
+                    #     if ts_relative < 86400:
+                    #         ts_relative += 1
+                    #         ts_list.append(ts_relative)
+                    #         branches_covered_list.append(branches_covered_list[-1])
+                    #     else:
+                    #         ts_relative -= 1
+                    #         ts_list.pop()
+                    #         branches_covered_list.pop()
 
             trial_results_branches.append(branches_covered_list)
             trial_results_ts.append(ts_list)
@@ -602,6 +633,106 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
             for trial_idx in range(len(trial_results_branches)):
                 value_series.append(trial_results_branches[trial_idx][idx])  
             all_trial_branches.append(value_series)
+
+        fuzzer_to_cov.update({fuzzer_name:{"braches":all_trial_branches,"crashes":ts_relative_crash_list,}})
+
+    #return fuzzer_to_cov
+        lower = []
+        upper = []
+        plot_bands = False
+        try:
+            for values in all_trial_branches:
+                d_interval = sorted(values)[3:7]
+                min_val = d_interval[0]
+                max_val = d_interval[-1]
+                lower.append(min_val)
+                upper.append(max_val)
+                plot_bands = True
+        except Exception as e:
+            print("Seems not enough values to unpack")
+            print(e)
+        median = np.median(all_trial_branches, axis=1)
+
+        if fuzzer_name in fuzzer_colors.keys():
+            fuzzer_color = fuzzer_colors[fuzzer_name]
+        else:
+            fuzzer_color = random_rgb_color()
+
+        median = np.insert(median,0,0)
+        upper = np.insert(upper,0,0)
+        lower = np.insert(lower,0,0)
+        max_time = len(upper)
+        if show_bands and plot_bands:
+            ax.fill_between(np.arange(len(median[:max_time])), lower[:max_time], upper[:max_time], color=fuzzer_color, alpha = 0.15) # type: ignore
+        ax.plot(np.arange(max_time), median[:max_time], color=fuzzer_color, alpha = 0.65, label=f"Median-{fuzzer_name}")
+        
+        times = list(np.arange(max_time))
+        
+        for crash_time in ts_relative_crash_list:
+            if int(crash_time) in times:
+                index = times.index(crash_time)
+
+                plt.annotate('$\U00002629$', (crash_time, median[index]), color=fuzzer_color, textcoords="offset points", xytext=(0, -2), ha='center')
+                # $\U0001F601$
+        done = True
+
+    if done:
+        # Add a legend for each unique color
+        handles, labels = plt.gca().get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        plt.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 4})
+
+        plt.xlabel("Time (s)")
+        plt.ylabel("Number of branches covered")
+        ax.set_ylim(ymin=0)
+        plt.savefig(f"plots/all_median.png",dpi=150)
+        #plt.savefig(f"plots/all_median.svg",format="svg")
+        plt.savefig(f"plots/incremental/median_{img_cnt:04d}.png",dpi=150)
+
+        return True
+    else:
+        print("Plotting failed")
+        return False
+
+# def plotting():
+#     calc_plot_data()
+#     plot_cov_line()
+#     plot_cov_bar()
+
+def plot_cov_line(all_fuzzer_data : Dict[str,Dict], fuzzer_colors : dict = {}, img_cnt = 0):
+
+    done = False
+
+    if not Path("plots").exists():
+        Path("plots").mkdir()    
+    
+    if not Path("plots/incremental").exists():
+        Path("plots/incremental").mkdir()
+
+    used_colors = set()
+    fuzzer_names : list = list(all_fuzzer_data.keys())
+
+    if len(fuzzer_names) > 0 and len(fuzzer_colors) == 0:
+        for fuzzer_name in fuzzer_names:
+            if len(fuzzer_names) < 10:
+                fuzzer_color = random.choice(list(mcolors.TABLEAU_COLORS.keys()))
+                while fuzzer_color in list(fuzzer_colors.values()):
+                    fuzzer_color = random.choice(list(mcolors.TABLEAU_COLORS.keys()))
+                fuzzer_colors.update({fuzzer_name:fuzzer_color})
+            else:
+                for color_idx in range(len(fuzzer_names)): 
+                    fuzzer_color = random_rgb_color()    
+                    # Check if the color is sufficiently different from used colors
+                    while not is_color_different(fuzzer_color, used_colors, threshold=0.5):
+                        fuzzer_color = random_rgb_color()
+                    fuzzer_colors.update({fuzzer_name:fuzzer_color})
+
+    fig, ax = plt.subplots()
+
+    for fuzzer_name in all_fuzzer_data:
+        fuzzer_data = all_fuzzer_data[fuzzer_name]
+        all_trial_branches = fuzzer_data["branches"]
+        ts_relative_crash_list = fuzzer_data["crashes"]
 
         lower = []
         upper = []
@@ -659,7 +790,10 @@ def plot_while_calc(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt =
     else:
         print("Plotting failed")
         return False
-  
+
+def plot_cov_bar():
+    pass
+
 def gif_up():
     print("Generating gif!")
     if Path("plots/incremental/").exists:
@@ -699,7 +833,7 @@ def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str]
     while not stop_event.is_set():
         try:
             print("plotting...")
-            plot_while_calc(fuzzer_names, skip_fill,cnt, fuzzer_colors=fuzzer_colors, plot_crashes=plot_crashes)
+            calc_plot_data(fuzzer_names, skip_fill,cnt, fuzzer_colors=fuzzer_colors, plot_crashes=plot_crashes)
         except Exception as e:
             tb = traceback.format_exc()
             print("Something went wrong!")
@@ -894,7 +1028,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
 
         print(fuzzer_names)
         
-        plot_while_calc(set(fuzzer_names), plot_crashes=args.crashes)
+        calc_plot_data(set(fuzzer_names), plot_crashes=args.crashes)
 
     if args.gif:
         gif_up()
