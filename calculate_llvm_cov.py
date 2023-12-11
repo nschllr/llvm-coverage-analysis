@@ -61,7 +61,7 @@ def get_starttime(fuzzer_stats_path : Path) -> str:
     
     print("No or empty fuzzer_stats, using start_time.txt!")
     start_time_file : Path = fuzzer_stats_path.parent.parent / "start_time.txt"
-    if start_time_file.exists:
+    if start_time_file.exists():
         with open(start_time_file.as_posix(),"r") as fd:
             starttime = fd.readline().split(".")[0]
         if starttime != "":
@@ -99,6 +99,8 @@ def check_legacy_afl(afl_version : str) -> bool:
             print(f"#### RE MATCH is None!! --> afl_version: {afl_version} ########")
             return True
     return True
+
+
 
 def get_testcase_cov_time(testcase : Path, starttime : str, afl_version : str) -> int:
     return 0
@@ -221,7 +223,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
         if i % 1000 == 0:
             print(f"Processing Testcase {trial} - {base_dir.name}:\t {i}/{len(testcases_to_starttime)}")
 
-        cov_time: int = get_testcase_cov_time(testcase, starttime, afl_version)
+        cov_time: int = 0
 
         if legacy_afl:
             testcase_time = int(os.stat(testcase).st_mtime)
@@ -237,7 +239,13 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
         profraw_file = f"{profraw_dir}/llvm_{i:08d}_ts:{cov_time}.profraw"
         # print(f"profraw_file:",profraw_file)
         os.environ["LLVM_PROFILE_FILE"] = profraw_file
-        llvm_target_cmd = f"{target_bin} {target_args} {testcase}"
+
+        target_args_w_input = target_args
+
+        while "@@" in target_args_w_input:
+            target_args_w_input = target_args_w_input.replace("@@", str(testcase))
+        #llvm_target_cmd = f"{target_bin} {target_args} {testcase}"
+        llvm_target_cmd = f"{target_bin} {target_args_w_input}"
 
         execute_cmd(llvm_target_cmd.split(" "))
     print(f"\nGenerating profraw files done ({trial} - {base_dir.name})!")
@@ -253,7 +261,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
         for minute, files in file_groups.items():
             # merge_by_minute_single(files, minute, trial)
             futures.append(executor.submit(merge_by_minute_single, files, minute, trial))
-            concurrent.futures.wait(futures)
+        concurrent.futures.wait(futures)
 
     print(f"Merging and exporting data profdata... ({trial} - {base_dir.name})")
 
@@ -274,13 +282,13 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
         #print(f"Running command ({trial} - {base_dir.name}): {llvm_profdata_cmd}")
         print(f"Processing (merge profdata) ({trial} - {base_dir.name}): {id}/{len(profdata_files)} -- {round(id / len(profdata_files)*100,2)}%")
         
-        execute_cmd(llvm_profdata_cmd.split(" "))
+        execute_cmd(llvm_profdata_cmd.split(" "), check = True)
         llvm_export_cmd = f"llvm-cov-14 export -format=text -region-coverage-gt=0 -skip-expansions {target_bin} -instr-profile={profdata_file_final}"
         #print(f"Running export command ({trial} - {base_dir.name}): {llvm_export_cmd}")
         res = execute_cmd(llvm_export_cmd.split(" "), capture_output=True)
         report_data = json.loads(res.stdout)
         
-        branch_count = calculate_cov_branches(report_data)
+        branch_count = calculate_cov_branches(report_data["data"][0]["files"])
         #branch_count = get_branches_covered(report_data)
         
         timestamp_to_b_covered.append((timestamp, branch_count))
@@ -363,7 +371,7 @@ def merge_by_minute_single(files : list[Path], minute, trial):
 
     new_profdata_file: str = f"{profdata_dir}/llvm_ts:{timestamp}.profdata"
     llvm_profdata_cmd: str = f"llvm-profdata-14 merge -sparse -f {profdata_save_file} -o {new_profdata_file}"
-    execute_cmd(llvm_profdata_cmd.split(" "))
+    execute_cmd(llvm_profdata_cmd.split(" "), check=True)
 
     # deleting old files
     for profdata_file in files:
@@ -378,9 +386,10 @@ def clean_up(dir_path : Path, create : bool = False):
     if create:
         dir_path.mkdir(parents=True)
 
-def execute_cmd(cmd : List[str], capture_output=True):
+def execute_cmd(cmd : List[str], capture_output=True, check = False):
     #print(f"command: " + " ".join(cmd))
-    res = subprocess.run(cmd, capture_output=capture_output)
+    res = subprocess.run(list(filter(None, cmd)), capture_output=capture_output, check=check)
+
     return res
 
 
@@ -569,7 +578,7 @@ def calc_plot_data(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 
         for ts_to_branch_file in all_trial_paths:
             ts_to_branch = []
             with open(ts_to_branch_file.as_posix(),"r") as fd:
-                ts_to_branch = fd.readlines()
+                ts_to_branch: list[str] = fd.readlines()
             ts_list = []
             branches_covered_list = []
             ts_relative = 0
@@ -601,8 +610,8 @@ def calc_plot_data(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 
                         branches_covered_list.append(int(branches_covered))
                         ts_list.append(ts_relative)
                         ts +=1
+                        ts_relative += 1
                         break
-                ts_relative += 1
 
                 if not skip_fill:
                     # fill the array with the last branch value
@@ -632,9 +641,7 @@ def calc_plot_data(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 
                 value_series.append(trial_results_branches[trial_idx][idx])  
             all_trial_branches.append(value_series)
 
-        fuzzer_to_cov.update({fuzzer_name:{"braches":all_trial_branches,"crashes":ts_relative_crash_list,}})
 
-    #return fuzzer_to_cov
         lower = []
         upper = []
         plot_bands = False
@@ -660,6 +667,11 @@ def calc_plot_data(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 
         upper = np.insert(upper,0,0)
         lower = np.insert(lower,0,0)
         max_time = len(upper)
+
+        fuzzer_to_cov.update({fuzzer_name:{"color": fuzzer_color, "median":median,"upper": upper, "lower":lower, "max_time": max_time, "crashes":ts_relative_crash_list,}})
+    #return fuzzer_to_cov
+        
+
         if show_bands and plot_bands:
             ax.fill_between(np.arange(len(median[:max_time])), lower[:max_time], upper[:max_time], color=fuzzer_color, alpha = 0.15) # type: ignore
         ax.plot(np.arange(max_time), median[:max_time], color=fuzzer_color, alpha = 0.65, label=f"Median-{fuzzer_name}")
@@ -692,72 +704,50 @@ def calc_plot_data(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 
         print("Plotting failed")
         return False
 
-# def plotting():
-#     calc_plot_data()
-#     plot_cov_line()
-#     plot_cov_bar()
-
-def plot_cov_line(all_fuzzer_data : Dict[str,Dict], fuzzer_colors : dict = {}, img_cnt = 0):
-
-    done = False
+def plotting(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False):
 
     if not Path("plots").exists():
         Path("plots").mkdir()    
     
     if not Path("plots/incremental").exists():
         Path("plots/incremental").mkdir()
+    fuzzer_to_cov: Dict[str, Dict] = calc_plot_data(fuzzer_names, skip_fill = True, img_cnt = 0, fuzzer_colors = {}, base_dir = Path("coverage_analysis"), plot_crashes = False) # type: ignore
+    fig, (ax1, ax2) = plt.subplots(2, 1)
+    ax1 = plot_cov_line(ax1, fuzzer_to_cov)
+    ax1.set_xlabel("Time (s)")
+    ax1.set_ylabel("Number of branches covered")
+    ax1.set_ylim(ymin=0)
 
-    used_colors = set()
-    fuzzer_names : list = list(all_fuzzer_data.keys())
 
-    if len(fuzzer_names) > 0 and len(fuzzer_colors) == 0:
-        for fuzzer_name in fuzzer_names:
-            if len(fuzzer_names) < 10:
-                fuzzer_color = random.choice(list(mcolors.TABLEAU_COLORS.keys()))
-                while fuzzer_color in list(fuzzer_colors.values()):
-                    fuzzer_color = random.choice(list(mcolors.TABLEAU_COLORS.keys()))
-                fuzzer_colors.update({fuzzer_name:fuzzer_color})
-            else:
-                for color_idx in range(len(fuzzer_names)): 
-                    fuzzer_color = random_rgb_color()    
-                    # Check if the color is sufficiently different from used colors
-                    while not is_color_different(fuzzer_color, used_colors, threshold=0.5):
-                        fuzzer_color = random_rgb_color()
-                    fuzzer_colors.update({fuzzer_name:fuzzer_color})
+    # plot_cov_bar(fuzzer_to_cov)
+    ax2.set_xlabel("Fuzzer Name")
+    ax2.set_ylabel("Number of branches covered")
+    ax2.set_ylim(ymin=0)
 
-    fig, ax = plt.subplots()
 
-    for fuzzer_name in all_fuzzer_data:
-        fuzzer_data = all_fuzzer_data[fuzzer_name]
-        all_trial_branches = fuzzer_data["branches"]
-        ts_relative_crash_list = fuzzer_data["crashes"]
+    # Add a legend for each unique color
+    handles, labels = plt.gca().get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    plt.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 4})
 
-        lower = []
-        upper = []
-        plot_bands = False
-        try:
-            for values in all_trial_branches:
-                d_interval = sorted(values)[3:7]
-                min_val = d_interval[0]
-                max_val = d_interval[-1]
-                lower.append(min_val)
-                upper.append(max_val)
-                plot_bands = True
-        except Exception as e:
-            print("Seems not enough values to unpack")
-            print(e)
-        median = np.median(all_trial_branches, axis=1)
+    plt.savefig(f"plots/all_median.png",dpi=150)
+    # plt.savefig(f"plots/all_median.svg",format="svg")
+    # plt.savefig(f"plots/incremental/median_{img_cnt:04d}.png",dpi=150)
 
-        if fuzzer_name in fuzzer_colors.keys():
-            fuzzer_color = fuzzer_colors[fuzzer_name]
-        else:
-            fuzzer_color = random_rgb_color()
+def plot_cov_line(ax, fuzzer_to_cov : Dict[str, Dict]):
 
-        median = np.insert(median,0,0)
-        upper = np.insert(upper,0,0)
-        lower = np.insert(lower,0,0)
-        max_time = len(upper)
-        if show_bands and plot_bands:
+    # fuzzer_to_cov : {fuzzer_name:{"color": fuzzer_color, "median":median,"upper": upper, "lower":lower, "max_time": max_time, "crashes":ts_relative_crash_list,}}
+
+    for fuzzer_name in fuzzer_to_cov:
+        fuzzer_data = fuzzer_to_cov[fuzzer_name]
+        fuzzer_color = fuzzer_data["color"]
+        median: list[int] = fuzzer_data["median"]
+        upper : list[int] = fuzzer_data["upper"]
+        lower : list[int] = fuzzer_data["lower"]
+        max_time : int = fuzzer_data["max_time"]
+        ts_relative_crash_list : list = fuzzer_data["crashes"]
+
+        if show_bands and (len(lower) > 0 and  len(upper) > 0):
             ax.fill_between(np.arange(len(median[:max_time])), lower[:max_time], upper[:max_time], color=fuzzer_color, alpha = 0.15) # type: ignore
         ax.plot(np.arange(max_time), median[:max_time], color=fuzzer_color, alpha = 0.65, label=f"Median-{fuzzer_name}")
         
@@ -768,33 +758,24 @@ def plot_cov_line(all_fuzzer_data : Dict[str,Dict], fuzzer_colors : dict = {}, i
                 index = times.index(crash_time)
 
                 plt.annotate('$\U00002629$', (crash_time, median[index]), color=fuzzer_color, textcoords="offset points", xytext=(0, -2), ha='center')
-                # $\U0001F601$
-        done = True
 
-    if done:
-        # Add a legend for each unique color
-        handles, labels = plt.gca().get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        plt.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 4})
+    return ax
 
-        plt.xlabel("Time (s)")
-        plt.ylabel("Number of branches covered")
-        ax.set_ylim(ymin=0)
-        plt.savefig(f"plots/all_median.png",dpi=150)
-        #plt.savefig(f"plots/all_median.svg",format="svg")
-        plt.savefig(f"plots/incremental/median_{img_cnt:04d}.png",dpi=150)
 
-        return True
-    else:
-        print("Plotting failed")
-        return False
+def plot_cov_bar(ax, fuzzer_to_cov : Dict[str, Dict]):
+    for fuzzer_name in fuzzer_to_cov:
+        fuzzer_data = fuzzer_to_cov[fuzzer_name]
+        fuzzer_color = fuzzer_data["color"]
+        median: list[int] = fuzzer_data["median"]
+        upper : list[int] = fuzzer_data["upper"]
+        lower : list[int] = fuzzer_data["lower"]
+        ax.bar(median[-1], fuzzer_name)
 
-def plot_cov_bar():
-    pass
+    return ax
 
 def gif_up():
     print("Generating gif!")
-    if Path("plots/incremental/").exists:
+    if Path("plots/incremental/").exists():
         subprocess.call(["convert", "-delay", "10", "-loop", "0", "plots/incremental/*.png", "plots/fuzzer.gif"])
         print("Done --- fuzzer.gif")
     else:
@@ -952,7 +933,7 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--regex", type=str, default="", help="Regex to get specific filename identifier: e.g.\n\t\tdirectory: afl_0 afl_1 ...\n\t\tregex: afl_[0-9]*")
     parser.add_argument("--strip", type=str, default="", help="Strip the resulting fuzzer names by given character")
     parser.add_argument("--threads", type=int, default=80, help="Maximum number of threads")
-    parser.add_argument("--paralell_trials", type=int, default=20, help="Maximum number of paralell trials / runs to calculate (to reduce disk usage)")
+    parser.add_argument("--parallel_trials", type=int, default=20, help="Maximum number of parallel trials / runs to calculate (to reduce disk usage)")
     parser.add_argument("--crashes", action="store_true", default=False, help="Get crashes")
     parser.add_argument("--regcheck", action="store_true", default=False, help="List found fuzzers by your given regex")
     
@@ -1009,7 +990,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
             for base_dir, trial in all_jobs:
                 process_trial(trial, working_args, base_dir)
         else:    
-            main_args = (args.threads, working_args, all_jobs, args.paralell_trials)
+            main_args = (args.threads, working_args, all_jobs, args.parallel_trials)
             run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, interval_plot_thread, fuzzer_names, main_args, interval_seconds=30)
                 
         print("All trials processed.")
