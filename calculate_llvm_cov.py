@@ -93,14 +93,12 @@ def check_legacy_afl(afl_version : str) -> bool:
         if re_match is not None:
             stripped_version : float = float(re_match.group(0))
             if stripped_version > 2.52:
-                return True
+                return False
         else:
             # this shouldn't happen 
             print(f"#### RE MATCH is None!! --> afl_version: {afl_version} ########")
-            return False
-    return False
-
-
+            return True
+    return True
 
 def get_testcase_cov_time(testcase : Path, starttime : str, afl_version : str) -> int:
     return 0
@@ -226,7 +224,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
         cov_time: int = get_testcase_cov_time(testcase, starttime, afl_version)
 
         if legacy_afl:
-            testcase_time = int(os.stat(testcase).st_mtime) - int(starttime)
+            testcase_time = int(os.stat(testcase).st_mtime)
             cov_time = testcase_time
         else:
             # some afl++ version did not assign a time to "orig:" testcases
