@@ -847,18 +847,35 @@ def process_trial(trial : int, working_args, base_dir : Path):
 
     return llvm_cov(working_args, str(trial), base_dir)
 
+def log(log_value : str, log_file = "iterator_trial.txt"):
+    print(log_value)
+    with open(log_file, "a") as fd:
+            fd.write(f"{log_value}\n")
+
+
 def run_calc(num_threads : int, working_args, all_jobs, chunk_size : int = 20):
+
+    with open("iterator_trial.txt", "w") as fd:
+        fd.write("")
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_threads-1) as executor:
         trial_chunks_iter = iter(all_jobs[chunk_size:])
 
         # Submit the first chunk of trials asynchronously
         futures_list = [executor.submit(process_trial, trial, working_args, base_dir) for base_dir, trial in all_jobs[:chunk_size]]
+        
+        log(f"Adding {chunk_size} / {len(all_jobs)} elements to futures processing list (len: {len(futures_list)})")
+
+        completed_future_cnt = 1
+        job_cnt_done = chunk_size
 
         # Iterate over completed futures and submit the next trial from the next chunk
         for completed_future in concurrent.futures.as_completed(futures_list):
+            log(f"future_list length: {len(futures_list)}")
             try:
                 completed_future.result()  # Get the result to propagate exceptions
+                print(f"Job completed: {completed_future_cnt}")
+                completed_future_cnt += 1
             except Exception as e:
                 print(f"Exception in processing: {e}")
                 tb = traceback.format_exc()
@@ -868,14 +885,15 @@ def run_calc(num_threads : int, working_args, all_jobs, chunk_size : int = 20):
 
             # Submit the next trial from the next chunk, if available
             try:
-                with open("iterator_trial.txt", "a") as fd:
-                    fd.write(f"{time.time()} -- next trial!")
                 next_chunk = next(trial_chunks_iter)
-                print(f"Next trial {next_chunk}")
+                log(f"Next trial {job_cnt_done} ---- {next_chunk}")
+                job_cnt_done += 1
                 next_trial_future = executor.submit(process_trial, next_chunk[1], working_args, next_chunk[0])
                 futures_list.append(next_trial_future)
             except StopIteration:
-                print("Iteration done")
+                log("Iteration done -- leaving")
+                break
+
 
 
 def run_calc_single(num_threads, working_args, all_jobs, chunk_size = 20):
@@ -904,6 +922,7 @@ def run_calc_and_periodic_plot(executor, main_function, periodic_function, fuzze
         # Cancel the main function if interrupted
         future.cancel() # type: ignore
     finally:
+        print("Finally called!")
         # Signal the stop event to terminate the periodic function
         stop_event.set()
         # Wait for the periodic function thread to complete
@@ -985,6 +1004,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
             all_jobs.extend(list(zip([base_dir] * num_trials, range(num_trials))))
             print(f"Done: {i+1}/{len(fuzzer_names)}\n")
 
+        print(f"All jobs: {len(all_jobs)}")
         # testing
         if args.testing:
             for base_dir, trial in all_jobs:
