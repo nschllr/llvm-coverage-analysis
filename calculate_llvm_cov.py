@@ -1,4 +1,4 @@
-#!/bin/python3
+#!/bin/python3.10
 
 # Fuzzing with afl instrumented binary
 # coverage analysis with llvm instrumented binary
@@ -496,8 +496,7 @@ def is_color_different(color, used_colors, threshold=0.5):
     return True
 
 
-def calc_plot_data(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False):# -> dict[str, Dict[Any, Any]]:
-    done = False
+def calc_plot_data(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False):# -> dict[str, Dict[Any, Any]]:
 
     if not Path("plots").exists():
         Path("plots").mkdir()    
@@ -615,19 +614,6 @@ def calc_plot_data(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 
                         ts_relative += 1
                         break
 
-                if not skip_fill:
-                    # fill the array with the last branch value
-                    pass
-                    # while ts_relative < 86400 or ts_relative > 86400:
-                    #     if ts_relative < 86400:
-                    #         ts_relative += 1
-                    #         ts_list.append(ts_relative)
-                    #         branches_covered_list.append(branches_covered_list[-1])
-                    #     else:
-                    #         ts_relative -= 1
-                    #         ts_list.pop()
-                    #         branches_covered_list.pop()
-
             trial_results_branches.append(branches_covered_list)
             trial_results_ts.append(ts_list)
 
@@ -665,55 +651,55 @@ def calc_plot_data(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 
         else:
             fuzzer_color = random_rgb_color()
 
-        median = np.insert(median,0,0)
-        upper = np.insert(upper,0,0)
-        lower = np.insert(lower,0,0)
+        median = list(np.insert(median,0,0))
+        upper = list(np.insert(upper,0,0))
+        lower = list(np.insert(lower,0,0))
         max_time = len(upper)
 
         fuzzer_to_cov.update({fuzzer_name:{"color": fuzzer_color, "median":median,"upper": upper, "lower":lower, "max_time": max_time, "crashes":ts_relative_crash_list,}})
-    #return fuzzer_to_cov
+    return fuzzer_to_cov
         
 
-        if show_bands and plot_bands:
-            ax.fill_between(np.arange(len(median[:max_time])), lower[:max_time], upper[:max_time], color=fuzzer_color, alpha = 0.15) # type: ignore
-        ax.plot(np.arange(max_time), median[:max_time], color=fuzzer_color, alpha = 0.65, label=f"Median-{fuzzer_name}")
+    #     if show_bands and plot_bands:
+    #         ax.fill_between(np.arange(len(median[:max_time])), lower[:max_time], upper[:max_time], color=fuzzer_color, alpha = 0.15) # type: ignore
+    #     ax.plot(np.arange(max_time), median[:max_time], color=fuzzer_color, alpha = 0.65, label=f"Median-{fuzzer_name}")
         
-        times = list(np.arange(max_time))
+    #     times = list(np.arange(max_time))
         
-        for crash_time in ts_relative_crash_list:
-            if int(crash_time) in times:
-                index = times.index(crash_time)
+    #     for crash_time in ts_relative_crash_list:
+    #         if int(crash_time) in times:
+    #             index = times.index(crash_time)
 
-                plt.annotate('$\U00002629$', (crash_time, median[index]), color=fuzzer_color, textcoords="offset points", xytext=(0, -2), ha='center')
-                # $\U0001F601$
-        done = True
+    #             plt.annotate('$\U00002629$', (crash_time, median[index]), color=fuzzer_color, textcoords="offset points", xytext=(0, -2), ha='center')
+    #             # $\U0001F601$
+    #     done = True
 
-    if done:
-        # Add a legend for each unique color
-        handles, labels = plt.gca().get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        plt.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 4})
+    # if done:
+    #     # Add a legend for each unique color
+    #     handles, labels = plt.gca().get_legend_handles_labels()
+    #     by_label = dict(zip(labels, handles))
+    #     plt.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 4})
 
-        plt.xlabel("Time (s)")
-        plt.ylabel("Number of branches covered")
-        ax.set_ylim(ymin=0)
-        plt.savefig(f"plots/all_median.png",dpi=150)
-        #plt.savefig(f"plots/all_median.svg",format="svg")
-        plt.savefig(f"plots/incremental/median_{img_cnt:04d}.png",dpi=150)
+    #     plt.xlabel("Time (s)")
+    #     plt.ylabel("Number of branches covered")
+    #     ax.set_ylim(ymin=0)
+    #     plt.savefig(f"plots/all_median.png",dpi=150)
+    #     #plt.savefig(f"plots/all_median.svg",format="svg")
+    #     plt.savefig(f"plots/incremental/median_{img_cnt:04d}.png",dpi=150)
 
-        return True
-    else:
-        print("Plotting failed")
-        return False
+    #     return True
+    # else:
+    #     print("Plotting failed")
+    #     return False
 
-def plotting(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False):
+def plotting(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False) -> None:
 
     if not Path("plots").exists():
         Path("plots").mkdir()    
     
     if not Path("plots/incremental").exists():
         Path("plots/incremental").mkdir()
-    fuzzer_to_cov: Dict[str, Dict] = calc_plot_data(fuzzer_names, skip_fill = True, img_cnt = 0, fuzzer_colors = {}, base_dir = Path("coverage_analysis"), plot_crashes = False) # type: ignore
+    fuzzer_to_cov: Dict[str, Dict] = calc_plot_data(fuzzer_names, img_cnt, fuzzer_colors, base_dir, plot_crashes) # type: ignore
     fig, (ax1, ax2) = plt.subplots(2, 1)
     ax1 = plot_cov_line(ax1, fuzzer_to_cov)
     ax1.set_xlabel("Time (s)")
@@ -721,7 +707,7 @@ def plotting(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 0, fuz
     ax1.set_ylim(ymin=0)
 
 
-    # plot_cov_bar(fuzzer_to_cov)
+    ax2 = plot_cov_bar(ax2, fuzzer_to_cov)
     ax2.set_xlabel("Fuzzer Name")
     ax2.set_ylabel("Number of branches covered")
     ax2.set_ylim(ymin=0)
@@ -730,9 +716,10 @@ def plotting(fuzzer_names : set[str] = set(), skip_fill = True, img_cnt = 0, fuz
     # Add a legend for each unique color
     handles, labels = plt.gca().get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
-    plt.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 4})
+    ax1.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 12})
+    fig.tight_layout() 
 
-    plt.savefig(f"plots/all_median.png",dpi=150)
+    plt.savefig(f"plots/bar_line_median.png",dpi=150)
     # plt.savefig(f"plots/all_median.svg",format="svg")
     # plt.savefig(f"plots/incremental/median_{img_cnt:04d}.png",dpi=150)
 
@@ -740,20 +727,32 @@ def plot_cov_line(ax, fuzzer_to_cov : Dict[str, Dict]):
 
     # fuzzer_to_cov : {fuzzer_name:{"color": fuzzer_color, "median":median,"upper": upper, "lower":lower, "max_time": max_time, "crashes":ts_relative_crash_list,}}
 
+    # fill each fuzzer line to the maximum
+    max_time_to_fill = max([len(fuzzer_to_cov[fuzzer]["median"]) for fuzzer in fuzzer_to_cov])
+
     for fuzzer_name in fuzzer_to_cov:
         fuzzer_data = fuzzer_to_cov[fuzzer_name]
         fuzzer_color = fuzzer_data["color"]
         median: list[int] = fuzzer_data["median"]
         upper : list[int] = fuzzer_data["upper"]
         lower : list[int] = fuzzer_data["lower"]
-        max_time : int = fuzzer_data["max_time"]
+        #max_time : int = fuzzer_data["max_time"]
         ts_relative_crash_list : list = fuzzer_data["crashes"]
 
+        last_med = median[-1]
+        last_upper = upper[-1]
+        last_lower = lower[-1]
+
+        while len(median) != max_time_to_fill:
+            median.append(last_med)
+            upper.append(last_upper)
+            lower.append(last_lower)
+
         if show_bands and (len(lower) > 0 and  len(upper) > 0):
-            ax.fill_between(np.arange(len(median[:max_time])), lower[:max_time], upper[:max_time], color=fuzzer_color, alpha = 0.15) # type: ignore
-        ax.plot(np.arange(max_time), median[:max_time], color=fuzzer_color, alpha = 0.65, label=f"Median-{fuzzer_name}")
+            ax.fill_between(np.arange(len(median[:max_time_to_fill])), lower[:max_time_to_fill], upper[:max_time_to_fill], color=fuzzer_color, alpha = 0.15) # type: ignore
+        ax.plot(np.arange(max_time_to_fill), median[:max_time_to_fill], color=fuzzer_color, alpha = 0.65, label=f"Median-{fuzzer_name}")
         
-        times = list(np.arange(max_time))
+        times = list(np.arange(max_time_to_fill))
         
         for crash_time in ts_relative_crash_list:
             if int(crash_time) in times:
@@ -765,14 +764,18 @@ def plot_cov_line(ax, fuzzer_to_cov : Dict[str, Dict]):
 
 
 def plot_cov_bar(ax, fuzzer_to_cov : Dict[str, Dict]):
+    
     for fuzzer_name in fuzzer_to_cov:
         fuzzer_data = fuzzer_to_cov[fuzzer_name]
         fuzzer_color = fuzzer_data["color"]
         median: list[int] = fuzzer_data["median"]
         upper : list[int] = fuzzer_data["upper"]
         lower : list[int] = fuzzer_data["lower"]
-        ax.bar(median[-1], fuzzer_name)
-
+        ax.bar(fuzzer_name, median[-1], color=fuzzer_color)
+        ax.bar(fuzzer_name, upper[-1], color=fuzzer_color, alpha = 0.45)
+        ax.bar(fuzzer_name, lower[-1], color="w", alpha = 0.25)
+        
+        ax.errorbar(fuzzer_name, median[-1], yerr = [[median[-1] - lower[-1]], [upper[-1] - median[-1]]], color="b")
     return ax
 
 def gif_up():
@@ -783,10 +786,11 @@ def gif_up():
     else:
         print("no path plots/incremental does not exist")
 
-def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str] = set(), skip_fill = True, plot_crashes : bool = False):
+def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str] = set(), plot_crashes : bool = False):
 
     cnt = 0
     fuzzer_colors = {}
+    fuzzer_color = random_rgb_color()
     used_colors = set()
 
     try:
@@ -814,7 +818,7 @@ def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str]
     while not stop_event.is_set():
         try:
             print("plotting...")
-            calc_plot_data(fuzzer_names, skip_fill,cnt, fuzzer_colors=fuzzer_colors, plot_crashes=plot_crashes)
+            calc_plot_data(fuzzer_names,cnt, fuzzer_colors=fuzzer_colors, plot_crashes=plot_crashes)
         except Exception as e:
             tb = traceback.format_exc()
             print("Something went wrong!")
@@ -996,7 +1000,8 @@ def main(raw_args: Optional[Sequence[str]] = None):
 
         print(fuzzer_names)
         
-        calc_plot_data(set(fuzzer_names), plot_crashes=args.crashes)
+        plotting(set(fuzzer_names), plot_crashes=args.crashes)
+        #+calc_plot_data(set(fuzzer_names), plot_crashes=args.crashes)
 
     if args.gif:
         gif_up()
