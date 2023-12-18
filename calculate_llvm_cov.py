@@ -700,19 +700,18 @@ def calc_plot_data(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors :
     #     print("Plotting failed")
     #     return False
 
-def plotting(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False, save_svg = False) -> None:
+def plotting(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False, save_format = "png") -> None:
 
     rcParams.update({'figure.autolayout': True})
 
     if not Path("plots").exists():
         Path("plots").mkdir()
         
-    if save_svg:
-        plot_suffix = "svg"
-    else:
+    if save_format not in ["png", "svg", "pdf"]:
         plot_suffix = "png"
-            
-    
+    else:
+        plot_suffix = save_format
+              
     if not Path("plots/incremental").exists():
         Path("plots/incremental").mkdir()
     fuzzer_to_cov: Dict[str, Dict] = calc_plot_data(fuzzer_names, img_cnt, fuzzer_colors, base_dir, plot_crashes) # type: ignore
@@ -728,7 +727,7 @@ def plotting(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors : dict 
     ax1.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 6})
     fig1.tight_layout() 
     plt.autoscale()
-    plt.savefig(f"plots/line_median.{plot_suffix}", format=plot_suffix, dpi=150, bbox_inches="tight")
+    plt.savefig(f"plots/line_median.{plot_suffix}", format=plot_suffix, bbox_inches="tight")
     plt.close()
 
     fig2, ax2 = plt.subplots()
@@ -739,7 +738,7 @@ def plotting(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors : dict 
     fig2.tight_layout() 
     plt.autoscale()
     plt.xticks(fontsize=8, rotation=75)
-    plt.savefig(f"plots/bar_median.{plot_suffix}", format=plot_suffix, dpi=150, bbox_inches="tight")
+    plt.savefig(f"plots/bar_median.{plot_suffix}", format=plot_suffix, bbox_inches="tight")
 
     # plt.savefig(f"plots/all_median.svg",format="svg")
     # plt.savefig(f"plots/incremental/median_{img_cnt:04d}.png",dpi=150)
@@ -950,7 +949,7 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--parallel_trials", type=int, default=20, help="Maximum number of parallel trials / runs to calculate (to reduce disk usage)")
     parser.add_argument("--crashes", action="store_true", default=False, help="Get crashes")
     parser.add_argument("--regcheck", action="store_true", default=False, help="List found fuzzers by your given regex")
-    parser.add_argument("--svg", action="store_true", default=False, help="Save plots as SVG")
+    parser.add_argument("--pformat", type=str, default="png", help="Save plots as FORMAT")
     
     
     return parser.parse_args(raw_args)
@@ -1024,7 +1023,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
 
         print(fuzzer_names)
         
-        plotting(set(fuzzer_names), plot_crashes=args.crashes, save_svg = args.svg)
+        plotting(set(fuzzer_names), plot_crashes=args.crashes, save_format = args.pformat)
         #+calc_plot_data(set(fuzzer_names), plot_crashes=args.crashes)
 
     if args.gif:
