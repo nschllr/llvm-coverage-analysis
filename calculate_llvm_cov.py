@@ -31,6 +31,7 @@ import re
 import time
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from matplotlib import rcParams
 import numpy as np
 import subprocess
 import hashlib
@@ -556,6 +557,7 @@ def calc_plot_data(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors :
 
     for fuzzer_name in sorted(fuzzer_names):
         fuzzer_name = fuzzer_name.strip()
+        print(f"Processing: {fuzzer_name}")
         # all trial paths of fuzzer with name...
         # coverage_analysis_old/afl/profdata_files/trial_0/timestamp_to_b_covered.txt
         all_trial_paths = sorted(list(base_dir.glob(f"{fuzzer_name}/results/*/timestamp_to_b_covered.txt")))
@@ -639,7 +641,7 @@ def calc_plot_data(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors :
             l_perc = int(0.33 * num_trials)
             u_perc = int(0.66 * num_trials) + 1 
             
-            print(f"Calculating percentile: {l_perc} - {u_perc}")
+            #print(f"Calculating percentile: {l_perc} - {u_perc}")
             for values in all_trial_branches:
                 d_interval = sorted(values)[l_perc:u_perc]
                 min_val = d_interval[0]
@@ -698,10 +700,18 @@ def calc_plot_data(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors :
     #     print("Plotting failed")
     #     return False
 
-def plotting(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False) -> None:
+def plotting(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False, save_svg = False) -> None:
+
+    rcParams.update({'figure.autolayout': True})
 
     if not Path("plots").exists():
-        Path("plots").mkdir()    
+        Path("plots").mkdir()
+        
+    if save_svg:
+        plot_suffix = "svg"
+    else:
+        plot_suffix = "png"
+            
     
     if not Path("plots/incremental").exists():
         Path("plots/incremental").mkdir()
@@ -717,9 +727,9 @@ def plotting(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors : dict 
     by_label = dict(zip(labels, handles))
     ax1.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 6})
     fig1.tight_layout() 
-    plt.savefig(f"plots/line_median.png",dpi=150)
+    plt.autoscale()
+    plt.savefig(f"plots/line_median.{plot_suffix}", format=plot_suffix, dpi=150, bbox_inches="tight")
     plt.close()
-    
 
     fig2, ax2 = plt.subplots()
     ax2 = plot_cov_bar(ax2, fuzzer_to_cov)
@@ -727,13 +737,14 @@ def plotting(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors : dict 
     ax2.set_ylabel("Number of branches covered", fontsize=8)
     ax2.set_ylim(ymin=0)
     fig2.tight_layout() 
+    plt.autoscale()
     plt.xticks(fontsize=8, rotation=75)
-    plt.savefig(f"plots/bar_median.png",dpi=150)
+    plt.savefig(f"plots/bar_median.{plot_suffix}", format=plot_suffix, dpi=150, bbox_inches="tight")
 
     # plt.savefig(f"plots/all_median.svg",format="svg")
     # plt.savefig(f"plots/incremental/median_{img_cnt:04d}.png",dpi=150)
 
-def plot_cov_line(ax, fuzzer_to_cov : Dict[str, Dict]):
+def plot_cov_line(ax, fuzzer_to_cov : Dict[str, Dict]): # type: ignore
 
     # fuzzer_to_cov : {fuzzer_name:{"color": fuzzer_color, "median":median,"upper": upper, "lower":lower, "max_time": max_time, "crashes":ts_relative_crash_list,}}
 
@@ -773,7 +784,7 @@ def plot_cov_line(ax, fuzzer_to_cov : Dict[str, Dict]):
     return ax
 
 
-def plot_cov_bar(ax, fuzzer_to_cov : Dict[str, Dict]):
+def plot_cov_bar(ax, fuzzer_to_cov : Dict[str, Dict]): # type: ignore
     
     for fuzzer_name in fuzzer_to_cov:
         fuzzer_data = fuzzer_to_cov[fuzzer_name]
@@ -787,7 +798,7 @@ def plot_cov_bar(ax, fuzzer_to_cov : Dict[str, Dict]):
         
         print(f"lower: {lower[-1]}\tmedian: {median[-1]}\tupper: {upper[-1]}")
         
-        ax.errorbar(fuzzer_name, median[-1], yerr = [[median[-1] - lower[-1]], [upper[-1] - median[-1]]], color="b")
+        ax.errorbar(fuzzer_name, median[-1], yerr = [[median[-1] - lower[-1]], [upper[-1] - median[-1]]], color="black")
     return ax
 
 def gif_up():
@@ -939,6 +950,8 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--parallel_trials", type=int, default=20, help="Maximum number of parallel trials / runs to calculate (to reduce disk usage)")
     parser.add_argument("--crashes", action="store_true", default=False, help="Get crashes")
     parser.add_argument("--regcheck", action="store_true", default=False, help="List found fuzzers by your given regex")
+    parser.add_argument("--svg", action="store_true", default=False, help="Save plots as SVG")
+    
     
     return parser.parse_args(raw_args)
 
@@ -1011,7 +1024,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
 
         print(fuzzer_names)
         
-        plotting(set(fuzzer_names), plot_crashes=args.crashes)
+        plotting(set(fuzzer_names), plot_crashes=args.crashes, save_svg = args.svg)
         #+calc_plot_data(set(fuzzer_names), plot_crashes=args.crashes)
 
     if args.gif:
