@@ -525,6 +525,8 @@ def calc_plot_data(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors :
 
     all_ts_data_paths: list[Path] = sorted(list(base_dir.glob(f"*/results/*/timestamp_to_b_covered.txt")))
     #print(all_ts_data_paths)
+    num_trials = len(all_ts_data_paths) // len(fuzzer_names)
+    print(f"Number of trials: {num_trials}")
     if len(all_ts_data_paths) == 0:
         print("no timestamp files found yet")
         return {}
@@ -634,8 +636,12 @@ def calc_plot_data(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors :
         upper = []
         plot_bands = False
         try:
+            l_perc = int(0.33 * num_trials)
+            u_perc = int(0.66 * num_trials) + 1 
+            
+            print(f"Calculating percentile: {l_perc} - {u_perc}")
             for values in all_trial_branches:
-                d_interval = sorted(values)[3:7]
+                d_interval = sorted(values)[l_perc:u_perc]
                 min_val = d_interval[0]
                 max_val = d_interval[-1]
                 lower.append(min_val)
@@ -700,26 +706,30 @@ def plotting(fuzzer_names : set[str] = set(), img_cnt = 0, fuzzer_colors : dict 
     if not Path("plots/incremental").exists():
         Path("plots/incremental").mkdir()
     fuzzer_to_cov: Dict[str, Dict] = calc_plot_data(fuzzer_names, img_cnt, fuzzer_colors, base_dir, plot_crashes) # type: ignore
-    fig, (ax1, ax2) = plt.subplots(2, 1)
+    fig1, ax1 = plt.subplots()
     ax1 = plot_cov_line(ax1, fuzzer_to_cov)
-    ax1.set_xlabel("Time (s)")
-    ax1.set_ylabel("Number of branches covered")
+    ax1.set_xlabel("Time (s)", fontsize=8)
+    ax1.set_ylabel("Number of branches covered",fontsize=8)
     ax1.set_ylim(ymin=0)
-
-
-    ax2 = plot_cov_bar(ax2, fuzzer_to_cov)
-    ax2.set_xlabel("Fuzzer Name")
-    ax2.set_ylabel("Number of branches covered")
-    ax2.set_ylim(ymin=0)
-
 
     # Add a legend for each unique color
     handles, labels = plt.gca().get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
-    ax1.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 12})
-    fig.tight_layout() 
+    ax1.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 6})
+    fig1.tight_layout() 
+    plt.savefig(f"plots/line_median.png",dpi=150)
+    plt.close()
+    
 
-    plt.savefig(f"plots/bar_line_median.png",dpi=150)
+    fig2, ax2 = plt.subplots()
+    ax2 = plot_cov_bar(ax2, fuzzer_to_cov)
+    ax2.set_xlabel("Fuzzer Name", fontsize=8)
+    ax2.set_ylabel("Number of branches covered", fontsize=8)
+    ax2.set_ylim(ymin=0)
+    fig2.tight_layout() 
+    plt.xticks(fontsize=8, rotation=75)
+    plt.savefig(f"plots/bar_median.png",dpi=150)
+
     # plt.savefig(f"plots/all_median.svg",format="svg")
     # plt.savefig(f"plots/incremental/median_{img_cnt:04d}.png",dpi=150)
 
@@ -772,8 +782,10 @@ def plot_cov_bar(ax, fuzzer_to_cov : Dict[str, Dict]):
         upper : list[int] = fuzzer_data["upper"]
         lower : list[int] = fuzzer_data["lower"]
         ax.bar(fuzzer_name, median[-1], color=fuzzer_color)
-        ax.bar(fuzzer_name, upper[-1], color=fuzzer_color, alpha = 0.45)
+        ax.bar(fuzzer_name, upper[-1], color=fuzzer_color, alpha = 0.25)
         ax.bar(fuzzer_name, lower[-1], color="w", alpha = 0.25)
+        
+        print(f"lower: {lower[-1]}\tmedian: {median[-1]}\tupper: {upper[-1]}")
         
         ax.errorbar(fuzzer_name, median[-1], yerr = [[median[-1] - lower[-1]], [upper[-1] - median[-1]]], color="b")
     return ax
@@ -917,7 +929,6 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--calc", action="store_true", default=False, help="Calculate coverage")
     parser.add_argument("--res", action="store_true", default=False, help="Print results of mode")
     parser.add_argument("--plot", action="store_true", default=False, help="Plot results of mode")
-    parser.add_argument("--cplot", action="store_true", default=False, help="Plot results of mode")
     parser.add_argument("--gif", action="store_true", default=False, help="Create a gif from plot/incremental/*.png")
     parser.add_argument("--skip", action="store_true", default=False, help="Skip corpus copy. WARNING: rsync will anyways check for files left")
     parser.add_argument("--testing", action="store_true", default=False, help="Testing Mode (no multiprocessing)")
@@ -992,7 +1003,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
     if args.res:
         print("not implemented")
 
-    if args.cplot:
+    if args.plot:
         if args.fuzzer_names != "":
             fuzzer_names = args.fuzzer_names.split(",")
         else:
