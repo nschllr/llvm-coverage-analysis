@@ -42,6 +42,7 @@ CONTAINER_NAME = "llvm_cov_analysis"
 skip_corpus = False
 show_bands = False
 regex = ""
+num_trials = 0
 
 
 def get_testcases(corpus_path: Path) -> list[Path]:
@@ -479,7 +480,7 @@ def gen_arguments(args : Namespace) -> dict[str,Any]:
             print("Coverage binary does not exist!")
             exit()
             
-    if args.crash_binary.exists():
+    if args.crash_binary is not None and args.crash_binary.exists():
         crash_bin : Path = args.crash_binary
     else:
         crash_bin = None        
@@ -531,7 +532,7 @@ def calc_plot_data(fuzzer_names : set[str] = set(), fuzzer_colors : dict = {}, b
 
     all_ts_data_paths: list[Path] = sorted(list(base_dir.glob(f"*/results/*/timestamp_to_b_covered.txt")))
     #print(all_ts_data_paths)
-    num_trials = len(all_ts_data_paths) // len(fuzzer_names)
+    #num_trials = len(all_ts_data_paths) // len(fuzzer_names)
     print(f"Number of trials: {num_trials}")
     if len(all_ts_data_paths) == 0:
         print("no timestamp files found yet")
@@ -690,7 +691,7 @@ def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, f
         Path("plots/incremental").mkdir()
     fuzzer_to_cov: Dict[str, Dict] = calc_plot_data(fuzzer_names, fuzzer_colors, base_dir) # type: ignore
     fig1, ax1 = plt.subplots()
-    ax1 = plot_cov_line(ax1, fuzzer_to_cov, plot_crashes)
+    ax1 = plot_cov_line(ax1, fuzzer_to_cov, plot_crashes, while_calc=while_calc)
     ax1.set_xlabel("Time (s)", fontsize=8)
     ax1.set_ylabel("Reached branch coverage",fontsize=8)
     ax1.set_ylim(ymin=0)
@@ -718,12 +719,15 @@ def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, f
         plt.xticks(fontsize=8, rotation=75)
         plt.savefig(f"plots/bar_median.{plot_suffix}", format=plot_suffix, bbox_inches="tight")
 
-def plot_cov_line(ax, fuzzer_to_cov : Dict[str, Dict], plot_crashes): # type: ignore
+def plot_cov_line(ax, fuzzer_to_cov : Dict[str, Dict], plot_crashes, while_calc : bool = False): # type: ignore
 
     # fuzzer_to_cov : {fuzzer_name:{"color": fuzzer_color, "median":median,"upper": upper, "lower":lower, "max_time": max_time, "crashes":ts_relative_crash_list,}}
 
     # fill each fuzzer line to the maximum
-    max_time_to_fill = max([len(fuzzer_to_cov[fuzzer]["median"]) for fuzzer in fuzzer_to_cov])
+    if while_calc:
+        max_time_to_fill = 0
+    else:
+        max_time_to_fill = max([len(fuzzer_to_cov[fuzzer]["median"]) for fuzzer in fuzzer_to_cov])
 
     for fuzzer_name in fuzzer_to_cov:
         fuzzer_data = fuzzer_to_cov[fuzzer_name]
@@ -731,16 +735,20 @@ def plot_cov_line(ax, fuzzer_to_cov : Dict[str, Dict], plot_crashes): # type: ig
         median: list[int] = fuzzer_data["median"]
         upper : list[int] = fuzzer_data["upper"]
         lower : list[int] = fuzzer_data["lower"]
+        max_time : int  = fuzzer_data["max_time"]
         ts_relative_crash_list : list = fuzzer_data["crashes"]
 
         last_med = median[-1]
         last_upper = upper[-1]
         last_lower = lower[-1]
 
-        while len(median) != max_time_to_fill:
-            median.append(last_med)
-            upper.append(last_upper)
-            lower.append(last_lower)
+        if while_calc:
+            max_time_to_fill = max_time
+        else:
+            while len(median) != max_time_to_fill:
+                median.append(last_med)
+                upper.append(last_upper)
+                lower.append(last_lower)
 
         if show_bands and (len(lower) > 0 and  len(upper) > 0):
             ax.fill_between(np.arange(len(median[:max_time_to_fill])), lower[:max_time_to_fill], upper[:max_time_to_fill], color=fuzzer_color, alpha = 0.15) # type: ignore
@@ -965,13 +973,14 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
 
 
 def main(raw_args: Optional[Sequence[str]] = None):
-    global skip_corpus, show_bands, regex
+    global skip_corpus, show_bands, regex, num_trials
     
     args: Namespace = parse_arguments(raw_args)
     working_args: dict = gen_arguments(args)
     skip_corpus = args.skip
     show_bands = args.show_bands
     regex = args.regex
+    num_trials = args.trials
 
     if skip_corpus:
         print("Skipping corpus copy!!\nI hope you know what you are doing and you have the correct corpus here... 5sec to think about")
@@ -986,8 +995,10 @@ def main(raw_args: Optional[Sequence[str]] = None):
         print("found the following fuzzers")
         print(fuzzer_names)
         exit()
-        
-    all_jobs = init(fuzzer_names, working_args)
+    
+    all_jobs = []
+    if args.crashes or args.calc:
+        all_jobs = init(fuzzer_names, working_args)
         
     if args.crashes:
         for fuzzer_name in fuzzer_names:
