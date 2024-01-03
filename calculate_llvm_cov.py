@@ -321,6 +321,44 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
 
     return True, base_dir
 
+def merge_by_minute_single(files : list[Path], minute, trial):
+    timestamp = int(datetime.strptime(minute, '%Y-%m-%d %H:%M').timestamp())
+    print(f"Merging data for timestamp ({trial}): {minute} --- \t{len(files)} files")
+
+    profdata_dir = files[0].parent.parent.parent / "profdata_files" / trial
+    # temporary save files
+    fd, profdata_save_file = tempfile.mkstemp(dir=profdata_dir, prefix="llvm_tmp_", suffix=".txt")
+    with open(profdata_save_file, "w") as fd:
+        for profraw_file in files:
+            fd.write(f"{profraw_file}\n")
+
+    new_profdata_file: str = f"{profdata_dir}/llvm_ts:{timestamp}.profdata"
+    llvm_profdata_cmd: str = f"llvm-profdata-14 merge -sparse -f {profdata_save_file} -o {new_profdata_file}"
+    execute_cmd(llvm_profdata_cmd.split(" "), check=True)
+
+    # deleting old files
+    for profdata_file in files:
+        profdata_file.unlink()
+    Path(profdata_save_file).unlink()
+
+def clean_up(dir_path : Path, create : bool = False):
+    print(f"Cleaning up: {dir_path}")
+    if dir_path.exists():
+        shutil.rmtree(dir_path)
+
+    if create:
+        dir_path.mkdir(parents=True)
+
+def execute_cmd(cmd : List[str], capture_output=True, check = False):
+    # print(f"command: " + " ".join(cmd))
+    res = subprocess.run(list(filter(None, cmd)), capture_output=capture_output, check=check)
+
+    return res
+
+
+def get_branches_covered(json_data) -> int:
+    return int(json_data["data"][0]["totals"]["branches"]["covered"])
+
 def get_crashes(base_dir : Path, result_crash_dir : Path):
     print("     Get crashes...")
     full_corpus : Path = base_dir / "tmp" / "full_corpus"
@@ -366,45 +404,6 @@ def get_crashes(base_dir : Path, result_crash_dir : Path):
 def get_hash(file: Path) -> str:
     with open(file, "rb") as f:
         return hashlib.md5(f.read()).hexdigest()
-
-def merge_by_minute_single(files : list[Path], minute, trial):
-    timestamp = int(datetime.strptime(minute, '%Y-%m-%d %H:%M').timestamp())
-    print(f"Merging data for timestamp ({trial}): {minute} --- \t{len(files)} files")
-
-    profdata_dir = files[0].parent.parent.parent / "profdata_files" / trial
-    # temporary save files
-    fd, profdata_save_file = tempfile.mkstemp(dir=profdata_dir, prefix="llvm_tmp_", suffix=".txt")
-    with open(profdata_save_file, "w") as fd:
-        for profdata_file in files:
-            fd.write(f"{profdata_file}\n")
-
-    new_profdata_file: str = f"{profdata_dir}/llvm_ts:{timestamp}.profdata"
-    llvm_profdata_cmd: str = f"llvm-profdata-14 merge -sparse -f {profdata_save_file} -o {new_profdata_file}"
-    execute_cmd(llvm_profdata_cmd.split(" "), check=True)
-
-    # deleting old files
-    for profdata_file in files:
-        profdata_file.unlink()
-    Path(profdata_save_file).unlink()
-
-def clean_up(dir_path : Path, create : bool = False):
-    print(f"Cleaning up: {dir_path}")
-    if dir_path.exists():
-        shutil.rmtree(dir_path)
-
-    if create:
-        dir_path.mkdir(parents=True)
-
-def execute_cmd(cmd : List[str], capture_output=True, check = False):
-    # print(f"command: " + " ".join(cmd))
-    res = subprocess.run(list(filter(None, cmd)), capture_output=capture_output, check=check)
-
-    return res
-
-
-def get_branches_covered(json_data) -> int:
-    return int(json_data["data"][0]["totals"]["branches"]["covered"])
-
 
 def get_results(base_dir):
     import statistics
