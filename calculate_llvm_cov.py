@@ -219,12 +219,25 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
 
     print(f"Generating profraw data from testcases... ({trial} - {base_dir.name})")
     cov_times = []
+    clean_up(profdata_dir, create = True)
 
     for i, testcase_to_starttime in enumerate(testcases_to_starttime):
         afl_version, starttime, testcase = testcase_to_starttime
 
         if i % 1000 == 0:
             print(f"Processing Testcase {trial} - {base_dir.name}:\t {i}/{len(testcases_to_starttime)}")
+            
+        if i % 2000 == 0 and i > 0:
+            profraw_files : list[Path] = sorted(list(profraw_dir.iterdir()))
+            file_groups = group_files_by_minute(profraw_files)
+
+            print("Start multiprocessed merging by minute")
+            with concurrent.futures.ProcessPoolExecutor() as executor:
+                futures = []
+                for minute, files in file_groups.items():
+                    # merge_by_minute_single(files, minute, trial)
+                    futures.append(executor.submit(merge_by_minute_single, files, minute, trial))
+                concurrent.futures.wait(futures)
 
         cov_time: int = 0
 
@@ -252,19 +265,6 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
 
         execute_cmd(llvm_target_cmd.split(" "))
     print(f"\nGenerating profraw files done ({trial} - {base_dir.name})!")
-
-    profraw_files : list[Path] = sorted(list(profraw_dir.iterdir()))
-    clean_up(profdata_dir, create = True)
-
-    file_groups = group_files_by_minute(profraw_files)
-
-    print("Start multiprocessed merging by minute")
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        futures = []
-        for minute, files in file_groups.items():
-            # merge_by_minute_single(files, minute, trial)
-            futures.append(executor.submit(merge_by_minute_single, files, minute, trial))
-        concurrent.futures.wait(futures)
 
     print(f"Merging and exporting data profdata... ({trial} - {base_dir.name})")
 
