@@ -266,6 +266,17 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
         execute_cmd(llvm_target_cmd.split(" "))
     print(f"\nGenerating profraw files done ({trial} - {base_dir.name})!")
 
+    profraw_files : list[Path] = sorted(list(profraw_dir.iterdir()))
+    file_groups = group_files_by_minute(profraw_files)
+
+    print("Start multiprocessed merging by minute")
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        futures = []
+        for minute, files in file_groups.items():
+            # merge_by_minute_single(files, minute, trial)
+            futures.append(executor.submit(merge_by_minute_single, files, minute, trial))
+        concurrent.futures.wait(futures)
+
     print(f"Merging and exporting data profdata... ({trial} - {base_dir.name})")
 
     profdata_files : list[Path] = sorted(list(profdata_dir.iterdir()))
