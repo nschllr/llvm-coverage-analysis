@@ -43,6 +43,7 @@ skip_corpus = False
 show_bands = False
 regex = ""
 num_trials = 0
+llvm_version = None
 
 
 def get_testcases(corpus_path: Path) -> list[Path]:
@@ -117,9 +118,15 @@ def get_all_fuzzer(working_args, cstrip = ""):
     return fuzzer_names
 
 def mount_corpus(working_args, base_dir : Path, fuzzer_name: str, umount = False) -> None:
-    
+    trial_idf = working_args["trial_idf"]
     corpus_base_path = working_args["corpus_path"]
-    trial_paths : list[Path] = list(corpus_base_path.glob(f"*{fuzzer_name}*"))
+    if trial_idf != "":
+        print(f"Searching for trial: {trial_idf} in {corpus_base_path}")
+        trial_paths : list[Path] = list(corpus_base_path.glob(f"{fuzzer_name}/{trial_idf}"))
+    else:
+        trial_paths : list[Path] = list(corpus_base_path.glob(f"*{fuzzer_name}*"))
+    
+    print("trial_paths:",trial_paths)
     
     if len(trial_paths) == 0:
         # fuzzbench trials
@@ -127,7 +134,10 @@ def mount_corpus(working_args, base_dir : Path, fuzzer_name: str, umount = False
         trial_paths : list[Path] = list(corpus_base_path.glob(f"trial*"))
 
     for trial_id, trial_path in enumerate(trial_paths):
-        
+
+        sudo = ""
+        if os.geteuid() != 0:
+            sudo = "sudo "
         
         dest_path = Path(base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}")
         if not umount:
@@ -135,9 +145,9 @@ def mount_corpus(working_args, base_dir : Path, fuzzer_name: str, umount = False
             (base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}").mkdir(exist_ok=True)
             (base_dir / "profraw_files" / f"trial_{trial_id}").mkdir(exist_ok=True, parents=True)
             (base_dir / "profdata_files" / f"trial_{trial_id}").mkdir(exist_ok=True, parents=True)
-            res = subprocess.run(["sudo", "mount", "-r", "-B", "-v", trial_path.as_posix() + "/", dest_path])
+            res = subprocess.run([f"{sudo}mount", "-r", "-B", "-v", trial_path.as_posix() + "/", dest_path])
         else:
-            res = subprocess.run(["sudo", "umount", "-v", dest_path])
+            res = subprocess.run([f"{sudo}umount", "-v", dest_path])
 
 def extract_timestamp(file_path : Path) -> int:
     # Extract the timestamp from the file name
@@ -192,6 +202,8 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
     testcases_to_starttime: list[tuple] = []
     starttime = ""
     testcases = []
+    
+    print("full_corpus:",full_corpus / trial)
 
     queue_dirs : list[Path] = natsorted(list(Path(full_corpus / trial).glob("**/queue")))
     fuzzer_stats_paths : list[Path] = natsorted(list(Path(full_corpus / trial).glob("**/fuzzer_stats")))
@@ -210,7 +222,6 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
         testcases: list[Path] = get_testcases(queue_dir)
         starttime: str = get_starttime(fuzzer_stats)
         afl_version: str = get_afl_version(fuzzer_stats)
-
         # asume that all queues of the fuzzer have the same afl version -- so the first one will do it
         if legacy_afl is None:
             legacy_afl = check_legacy_afl(afl_version)
@@ -224,10 +235,10 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
     for i, testcase_to_starttime in enumerate(testcases_to_starttime):
         afl_version, starttime, testcase = testcase_to_starttime
 
-        if i % 1000 == 0:
+        if i % 100 == 0:
             print(f"Processing Testcase {trial} - {base_dir.name}:\t {i}/{len(testcases_to_starttime)}")
             
-        if i % 2000 == 0 and i > 0:
+        if i % 100 == 0 and i > 0:
             profraw_files : list[Path] = sorted(list(profraw_dir.iterdir()))
             file_groups = group_files_by_minute(profraw_files)
 
@@ -253,7 +264,6 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
             cov_time = int(starttime) + int(testcase_time) // 1000
         cov_times.append(cov_time)
         profraw_file = f"{profraw_dir}/llvm_{i:08d}_ts:{cov_time}.profraw"
-        # print(f"profraw_file:",profraw_file)
         os.environ["LLVM_PROFILE_FILE"] = profraw_file
 
         target_args_w_input = target_args
@@ -262,7 +272,6 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
             target_args_w_input = target_args_w_input.replace("@@", str(testcase))
         #llvm_target_cmd = f"{target_bin} {target_args} {testcase}"
         llvm_target_cmd = f"{target_bin} {target_args_w_input}"
-
         execute_cmd(llvm_target_cmd.split(" "))
     print(f"\nGenerating profraw files done ({trial} - {base_dir.name})!")
 
@@ -289,15 +298,15 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
 
         timestamp = extract_timestamp(profdata_file)
         if profdata_file_final.exists():
-            llvm_profdata_cmd: str = f"llvm-profdata-14 merge -sparse {profdata_file} {profdata_file_final} -o {profdata_file_final}"
+            llvm_profdata_cmd: str = f"llvm-profdata-{llvm_version} merge -sparse {profdata_file} {profdata_file_final} -o {profdata_file_final}"
         else:
-            llvm_profdata_cmd: str = f"llvm-profdata-14 merge -sparse {profdata_file} -o {profdata_file_final}"
+            llvm_profdata_cmd: str = f"llvm-profdata-{llvm_version} merge -sparse {profdata_file} -o {profdata_file_final}"
 
         #print(f"Running command ({trial} - {base_dir.name}): {llvm_profdata_cmd}")
         print(f"Processing (merge profdata) ({trial} - {base_dir.name}): {id}/{len(profdata_files)} -- {round(id / len(profdata_files)*100,2)}%")
         
         execute_cmd(llvm_profdata_cmd.split(" "), check = True)
-        llvm_export_cmd = f"llvm-cov-14 export -format=text -region-coverage-gt=0 -skip-expansions {target_bin} -instr-profile={profdata_file_final}"
+        llvm_export_cmd = f"llvm-cov-{llvm_version} export -format=text -region-coverage-gt=0 {target_bin} -instr-profile={profdata_file_final}"
         #print(f"Running export command ({trial} - {base_dir.name}): {llvm_export_cmd}")
         res = execute_cmd(llvm_export_cmd.split(" "), capture_output=True)
         report_data = json.loads(res.stdout)
@@ -344,7 +353,7 @@ def merge_by_minute_single(files : list[Path], minute, trial):
             fd.write(f"{profraw_file}\n")
 
     new_profdata_file: str = f"{profdata_dir}/llvm_ts:{timestamp}.profdata"
-    llvm_profdata_cmd: str = f"llvm-profdata-14 merge -sparse -f {profdata_save_file} -o {new_profdata_file}"
+    llvm_profdata_cmd: str = f"llvm-profdata-{llvm_version} merge -sparse -f {profdata_save_file} -o {new_profdata_file}"
     execute_cmd(llvm_profdata_cmd.split(" "), check=True)
 
     # deleting old files
@@ -479,6 +488,11 @@ def gen_arguments(args : Namespace) -> dict[str,Any]:
         exit()
     else:
         corpus_path : Path = args.corpus
+   
+    if args.work_dir is None:
+        base_dir : Path = Path("./")
+    else:
+        base_dir : Path = args.work_dir
     
     if args.cov_bin is None and args.calc:
         print("No coverage binary path given. Exiting")
@@ -498,7 +512,7 @@ def gen_arguments(args : Namespace) -> dict[str,Any]:
     trials : int = args.trials
     target_name : str = args.target
 
-    return {"corpus_path": corpus_path, "cov_bin": cov_bin_path, "trials" : trials, "target_name": target_name, "target_args": args.target_args, "crash_bin" : crash_bin}
+    return {"work_dir": base_dir, "corpus_path": corpus_path, "cov_bin": cov_bin_path, "trials" : trials, "trial_idf" : args.trial_idf, "target_name": target_name, "target_args": args.target_args, "crash_bin" : crash_bin}
 
 def random_rgb_color():
     return tuple(np.random.rand(3,))
@@ -685,20 +699,21 @@ def calc_plot_data(fuzzer_names : set[str] = set(), fuzzer_colors : dict = {}, b
     return fuzzer_to_cov
 
 
-def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False, save_format = "png") -> None:
+def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False, save_format = "png", work_dir = Path("work")) -> None:
 
     rcParams.update({'figure.autolayout': True})
+    plot_dir = work_dir / "plots"
 
-    if not Path("plots").exists():
-        Path("plots").mkdir()
+    if not plot_dir.exists():
+        plot_dir.mkdir()
         
     if save_format not in ["png", "svg", "pdf"] or while_calc:
         plot_suffix = "png"
     else:
         plot_suffix = save_format
               
-    if not Path("plots/incremental").exists():
-        Path("plots/incremental").mkdir()
+    if not Path(plot_dir / "incremental").exists():
+        Path(plot_dir / "incremental").mkdir()
     fuzzer_to_cov: Dict[str, Dict] = calc_plot_data(fuzzer_names, fuzzer_colors, base_dir) # type: ignore
     fig1, ax1 = plt.subplots()
     ax1 = plot_cov_line(ax1, fuzzer_to_cov, plot_crashes, while_calc=while_calc)
@@ -712,10 +727,10 @@ def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, f
     ax1.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 6})
     fig1.tight_layout() 
     plt.autoscale()
-    plt.savefig(f"plots/line_median.{plot_suffix}", format=plot_suffix, bbox_inches="tight")
+    plt.savefig(f"{plot_dir.as_posix()}/line_median.{plot_suffix}", format=plot_suffix, bbox_inches="tight")
     
     if while_calc:
-        plt.savefig(f"plots/incremental/line_median_{img_cnt:04d}.{plot_suffix}", format=plot_suffix, bbox_inches="tight")
+        plt.savefig(f"{plot_dir.as_posix()}/incremental/line_median_{img_cnt:04d}.{plot_suffix}", format=plot_suffix, bbox_inches="tight")
     plt.close()
 
     if not while_calc:
@@ -727,7 +742,7 @@ def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, f
         fig2.tight_layout() 
         plt.autoscale()
         plt.xticks(fontsize=8, rotation=75)
-        plt.savefig(f"plots/bar_median.{plot_suffix}", format=plot_suffix, bbox_inches="tight")
+        plt.savefig(f"{plot_dir.as_posix()}/bar_median.{plot_suffix}", format=plot_suffix, bbox_inches="tight")
 
 def plot_cov_line(ax, fuzzer_to_cov : Dict[str, Dict], plot_crashes, while_calc : bool = False): # type: ignore
 
@@ -939,11 +954,12 @@ def init(fuzzer_names, working_args : Dict[str, Any]) -> list[Path, int]:
     print(fuzzer_names)
 
     num_trials = working_args["trials"]
+    work_dir = working_args["work_dir"]
     all_jobs = []
 
     for i, fuzzer_name in enumerate(fuzzer_names):
         print(f"Fuzzer: {fuzzer_name}")
-        base_dir = Path("coverage_analysis") / fuzzer_name
+        base_dir = work_dir / Path("coverage_analysis") / fuzzer_name
         mount_corpus(working_args, base_dir, fuzzer_name, umount=True)
         create_directory_structure(base_dir, skip_corpus)
         
@@ -957,10 +973,12 @@ def init(fuzzer_names, working_args : Dict[str, Any]) -> list[Path, int]:
 def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser: ArgumentParser = ArgumentParser(description="Controller for AFL++ restarting instances")
     
+    parser.add_argument("--work_dir", type=Path, default=None, help="Path where to store the results")
     parser.add_argument("--corpus", type=Path, default=None, help="Path to corpus base")
     parser.add_argument("--trials", type=int, default=10, help="Number of trials")
     parser.add_argument("--target", type=str, default="objdump", help="Target name")
     parser.add_argument("--cov_bin", type=Path, default="", help="Path to llvm compiled coverage binary")
+    parser.add_argument("--trial_idf", type=str, default="", help="Identifier for trial directories e.g. trial_[0-9]*")
     parser.add_argument("--fuzzer_names", type=str, default="", help="Fuzzer names in quotes")
     parser.add_argument("--target_args", type=str, default="", help="Target arguments, use quotes")
     parser.add_argument("--calc", action="store_true", default=False, help="Calculate coverage")
@@ -983,7 +1001,7 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
 
 
 def main(raw_args: Optional[Sequence[str]] = None):
-    global skip_corpus, show_bands, regex, num_trials
+    global skip_corpus, show_bands, regex, num_trials, llvm_version
     
     args: Namespace = parse_arguments(raw_args)
     working_args: dict = gen_arguments(args)
@@ -991,6 +1009,13 @@ def main(raw_args: Optional[Sequence[str]] = None):
     show_bands = args.show_bands
     regex = args.regex
     num_trials = args.trials
+    
+    # check which version of llvm is installed
+    llvm_version = subprocess.run(["llvm-config", "--version"], capture_output=True).stdout.decode("utf-8").split(".")[0]
+    
+    if shutil.which("llvm-cov-" + llvm_version) == None:
+        print(f"llvm not found!")
+        exit()        
 
     if skip_corpus:
         print("Skipping corpus copy!!\nI hope you know what you are doing and you have the correct corpus here... 5sec to think about")
@@ -1028,7 +1053,8 @@ def main(raw_args: Optional[Sequence[str]] = None):
         
     for i, fuzzer_name in enumerate(fuzzer_names):
         print(f"Fuzzer: {fuzzer_name}")
-        base_dir = Path("coverage_analysis") / fuzzer_name
+        work_dir = working_args["work_dir"]
+        base_dir = work_dir / Path("coverage_analysis") / fuzzer_name
         mount_corpus(working_args, base_dir, fuzzer_name, umount=True)
 
     if args.res:
@@ -1036,7 +1062,8 @@ def main(raw_args: Optional[Sequence[str]] = None):
 
     if args.plot:
         print(fuzzer_names)
-        plotting(set(fuzzer_names), plot_crashes=args.crashes, save_format = args.pformat)
+        base_dir = args.work_dir / Path("coverage_analysis")
+        plotting(set(fuzzer_names), base_dir=base_dir, plot_crashes=args.crashes, save_format = args.pformat)
 
     if args.gif:
         gif_up()
