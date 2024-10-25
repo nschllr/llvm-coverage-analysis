@@ -44,6 +44,8 @@ show_bands = False
 regex = ""
 num_trials = 0
 llvm_version = None
+all_jobs_len = 0
+jobs_done = 0
 
 
 def get_testcases(corpus_path: Path) -> list[Path]:
@@ -188,7 +190,8 @@ def calculate_cov_branches(json_data):
     return len(st)
 
 def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
-
+    global jobs_done
+    
     trial = f"trial_{trial}"
     full_corpus : Path = base_dir / "tmp" / "full_corpus"
     profraw_dir : Path = base_dir / "profraw_files" / trial
@@ -231,14 +234,15 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
     print(f"Generating profraw data from testcases... ({trial} - {base_dir.name})")
     cov_times = []
     clean_up(profdata_dir, create = True)
+    tts_len = len(testcases_to_starttime)
 
     for i, testcase_to_starttime in enumerate(testcases_to_starttime):
         afl_version, starttime, testcase = testcase_to_starttime
-
-        if i % 100 == 0:
-            print(f"Processing Testcase {trial} - {base_dir.name}:\t {i}/{len(testcases_to_starttime)}")
+        
+        if i % int(tts_len * 0.2) == 0:
+            print(f"[{jobs_done}/{all_jobs_len}] Processing Testcase {trial} - {base_dir.name}:\t {i}/{len(testcases_to_starttime)} -- {round(i / len(testcases_to_starttime)*100,2)}%")
             
-        if i % 100 == 0 and i > 0:
+        if i % int(tts_len * 0.3) == 0 and i > 0:
             profraw_files : list[Path] = sorted(list(profraw_dir.iterdir()))
             file_groups = group_files_by_minute(profraw_files)
 
@@ -286,7 +290,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
             futures.append(executor.submit(merge_by_minute_single, files, minute, trial))
         concurrent.futures.wait(futures)
 
-    print(f"Merging and exporting data profdata... ({trial} - {base_dir.name})")
+    print(f"[{jobs_done}/{all_jobs_len}] Merging and exporting data profdata... ({trial} - {base_dir.name})")
 
     profdata_files : list[Path] = sorted(list(profdata_dir.iterdir()))
     timestamp_to_b_covered : list[tuple]= []
@@ -303,7 +307,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
             llvm_profdata_cmd: str = f"llvm-profdata-{llvm_version} merge -sparse {profdata_file} -o {profdata_file_final}"
 
         #print(f"Running command ({trial} - {base_dir.name}): {llvm_profdata_cmd}")
-        print(f"Processing (merge profdata) ({trial} - {base_dir.name}): {id}/{len(profdata_files)} -- {round(id / len(profdata_files)*100,2)}%")
+        print(f"[{jobs_done}/{all_jobs_len}] Processing (merge profdata) ({trial} - {base_dir.name}): {id}/{len(profdata_files)} -- {round(id / len(profdata_files)*100,2)}%")
         
         execute_cmd(llvm_profdata_cmd.split(" "), check = True)
         llvm_export_cmd = f"llvm-cov-{llvm_version} export -format=text -region-coverage-gt=0 {target_bin} -instr-profile={profdata_file_final}"
@@ -333,7 +337,8 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
             fd.write(res.stdout)
 
         profdata_file.unlink()
-    print(f"Export done ({trial} - {base_dir.name})")
+    jobs_done += 1
+    print(f"[{jobs_done}/{all_jobs_len}] Export done ({trial} - {base_dir.name})")
 
     # cleanup to save space
     clean_up(profraw_dir)
@@ -813,7 +818,7 @@ def gif_up():
     else:
         print("no path plots/incremental does not exist")
 
-def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str] = set(), plot_crashes : bool = False):
+def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str] = set(), plot_crashes : bool = False, base_dir = Path("coverage_analysis")) -> None:
 
     cnt = 0
     fuzzer_colors = {}
@@ -845,7 +850,7 @@ def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str]
     while not stop_event.is_set():
         try:
             print("plotting...")
-            plotting(fuzzer_names, while_calc = True, img_cnt = cnt, fuzzer_colors=fuzzer_colors, plot_crashes=plot_crashes)
+            plotting(fuzzer_names, while_calc = True, img_cnt = cnt, fuzzer_colors=fuzzer_colors, base_dir=base_dir, plot_crashes=plot_crashes)
         except Exception as e:
             tb = traceback.format_exc()
             print("Something went wrong!")
@@ -918,11 +923,11 @@ def run_calc(working_args : Dict[str, Any], all_jobs : list[tuple[Path, int]], c
         concurrent.futures.wait(futures_list, return_when=concurrent.futures.FIRST_EXCEPTION)
 
 
-def run_calc_and_periodic_plot(executor, main_function, periodic_function, fuzzer_names : set[str], main_args, interval_seconds=60):
+def run_calc_and_periodic_plot(executor, main_function, periodic_function, base_dir: Path, fuzzer_names : set[str], main_args, interval_seconds=60):
     stop_event = threading.Event()
 
     # Start the periodic function in a separate thread
-    periodic_thread = threading.Thread(target=periodic_function, args=(stop_event, interval_seconds, fuzzer_names))
+    periodic_thread = threading.Thread(target=periodic_function, args=(stop_event, interval_seconds, fuzzer_names, base_dir))
     periodic_thread.start()
 
     try:
@@ -1001,7 +1006,7 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
 
 
 def main(raw_args: Optional[Sequence[str]] = None):
-    global skip_corpus, show_bands, regex, num_trials, llvm_version
+    global skip_corpus, show_bands, regex, num_trials, llvm_version, all_jobs_len
     
     args: Namespace = parse_arguments(raw_args)
     working_args: dict = gen_arguments(args)
@@ -1041,13 +1046,15 @@ def main(raw_args: Optional[Sequence[str]] = None):
 
     if args.calc:
         print(f"All jobs: {len(all_jobs)}")
+        all_jobs_len = len(all_jobs)
         # testing
         if args.testing:
             for base_dir, trial in all_jobs:
                 process_trial(trial, working_args, base_dir)
         else:    
             main_args = (working_args, all_jobs, args.parallel_trials)
-            run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, interval_plot_thread, fuzzer_names, main_args, interval_seconds=30)
+            base_dir = working_args["work_dir"] / Path("coverage_analysis")
+            run_calc_and_periodic_plot(concurrent.futures.ProcessPoolExecutor(), run_calc, interval_plot_thread, base_dir, fuzzer_names, main_args, interval_seconds=180)
                 
         print("All trials processed.")
         
