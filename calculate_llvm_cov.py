@@ -26,6 +26,7 @@ import concurrent.futures
 import concurrent.futures.thread
 import tempfile
 import threading
+from threading import Lock
 from typing import Any, Dict, List, Optional, Sequence
 import re
 import time
@@ -45,7 +46,7 @@ regex = ""
 num_trials = 0
 llvm_version = None
 all_jobs_len = 0
-jobs_done = 0
+accuracy = 0.0
 
 
 def get_testcases(corpus_path: Path) -> list[Path]:
@@ -189,8 +190,7 @@ def calculate_cov_branches(json_data):
     traverse(json_data, add_st)
     return len(st)
 
-def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
-    global jobs_done
+def llvm_cov(working_args, trial: str, base_dir: Path, lock, jobs_done) -> tuple[bool, Path]:
     
     trial = f"trial_{trial}"
     full_corpus : Path = base_dir / "tmp" / "full_corpus"
@@ -240,9 +240,9 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
         afl_version, starttime, testcase = testcase_to_starttime
         
         if i % int(tts_len * 0.2) == 0:
-            print(f"[{jobs_done}/{all_jobs_len}] Processing Testcase {trial} - {base_dir.name}:\t {i}/{len(testcases_to_starttime)} -- {round(i / len(testcases_to_starttime)*100,2)}%")
+            print(f"[{jobs_done[0]}/{all_jobs_len}] Processing Testcase {trial} - {base_dir.name}:\t {i}/{len(testcases_to_starttime)} -- {round(i / len(testcases_to_starttime)*100,2)}%")
             
-        if i % int(tts_len * 0.3) == 0 and i > 0:
+        if i % int(tts_len * 0.3) == 0 and i > 0 or i == len(testcases_to_starttime) - 1:
             profraw_files : list[Path] = sorted(list(profraw_dir.iterdir()))
             file_groups = group_files_by_minute(profraw_files)
 
@@ -265,6 +265,9 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
                 testcase_time = 0
             else:
                 testcase_time = testcase.name.split(",time:")[1].split(",")[0]
+                # some afl++ versions have a "+" in the timestamp for splicing
+                if "+" in testcase_time:
+                    testcase_time = testcase_time.split("+")[0] 
             cov_time = int(starttime) + int(testcase_time) // 1000
         cov_times.append(cov_time)
         profraw_file = f"{profraw_dir}/llvm_{i:08d}_ts:{cov_time}.profraw"
@@ -279,18 +282,19 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
         execute_cmd(llvm_target_cmd.split(" "))
     print(f"\nGenerating profraw files done ({trial} - {base_dir.name})!")
 
-    profraw_files : list[Path] = sorted(list(profraw_dir.iterdir()))
-    file_groups = group_files_by_minute(profraw_files)
+    # profraw_files : list[Path] = sorted(list(profraw_dir.iterdir()))
+    # file_groups = group_files_by_minute(profraw_files)
 
-    print("Start multiprocessed merging by minute")
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        futures = []
-        for minute, files in file_groups.items():
-            # merge_by_minute_single(files, minute, trial)
-            futures.append(executor.submit(merge_by_minute_single, files, minute, trial))
-        concurrent.futures.wait(futures)
+    # print("Start multiprocessed merging by minute")
+    # with concurrent.futures.ProcessPoolExecutor() as executor:
+    #     futures = []
+    #     for minute, files in file_groups.items():
+    #         # merge_by_minute_single(files, minute, trial)
+    #         futures.append(executor.submit(merge_by_minute_single, files, minute, trial))
+    #     concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
+        
 
-    print(f"[{jobs_done}/{all_jobs_len}] Merging and exporting data profdata... ({trial} - {base_dir.name})")
+    print(f"[{jobs_done[0]}/{all_jobs_len}] Merging and exporting data profdata... ({trial} - {base_dir.name})")
 
     profdata_files : list[Path] = sorted(list(profdata_dir.iterdir()))
     timestamp_to_b_covered : list[tuple]= []
@@ -307,38 +311,42 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
             llvm_profdata_cmd: str = f"llvm-profdata-{llvm_version} merge -sparse {profdata_file} -o {profdata_file_final}"
 
         #print(f"Running command ({trial} - {base_dir.name}): {llvm_profdata_cmd}")
-        print(f"[{jobs_done}/{all_jobs_len}] Processing (merge profdata) ({trial} - {base_dir.name}): {id}/{len(profdata_files)} -- {round(id / len(profdata_files)*100,2)}%")
+        print(f"[{jobs_done[0]}/{all_jobs_len}] Processing (merge profdata) ({trial} - {base_dir.name}): {id}/{len(profdata_files)} -- {round(id / len(profdata_files)*100,2)}%")
         
         execute_cmd(llvm_profdata_cmd.split(" "), check = True)
-        llvm_export_cmd = f"llvm-cov-{llvm_version} export -format=text -region-coverage-gt=0 {target_bin} -instr-profile={profdata_file_final}"
-        #print(f"Running export command ({trial} - {base_dir.name}): {llvm_export_cmd}")
-        res = execute_cmd(llvm_export_cmd.split(" "), capture_output=True)
-        report_data = json.loads(res.stdout)
         
-        branch_count = calculate_cov_branches(report_data["data"][0]["files"])
-        #branch_count = get_branches_covered(report_data)
-        
-        timestamp_to_b_covered.append((timestamp, branch_count))
+        if id % int(len(profdata_files) * accuracy) == 0 and id > 0 or id == len(profdata_files) - 1:
+            llvm_export_cmd = f"llvm-cov-{llvm_version} export -format=text -region-coverage-gt=0 {target_bin} -instr-profile={profdata_file_final}"
+            print(f"[{jobs_done[0]}/{all_jobs_len}] Running export command ({trial} - {base_dir.name})")
+            res = execute_cmd(llvm_export_cmd.split(" "), capture_output=True)
+            report_data = json.loads(res.stdout)
+            
+            branch_count = calculate_cov_branches(report_data["data"][0]["files"])
+            #branch_count = get_branches_covered(report_data)
+            
+            timestamp_to_b_covered.append((timestamp, branch_count))
 
-        result_dir : Path = base_dir / "results" / trial
-        result_dir.mkdir(exist_ok=True, parents=True)
+            result_dir : Path = base_dir / "results" / trial
+            result_dir.mkdir(exist_ok=True, parents=True)
 
-        with open(f"{result_dir}/timestamp_to_b_covered.txt","a") as fd:
-                fd.write(f"{timestamp},{branch_count}\n")
+            with open(f"{result_dir}/timestamp_to_b_covered.txt","a") as fd:
+                    fd.write(f"{timestamp},{branch_count}\n")
 
-        #with open(f"{profdata_dir}/report_{timestamp}.json","a") as fd:
-        #        fd.write(report_data)
+            #with open(f"{profdata_dir}/report_{timestamp}.json","a") as fd:
+            #        fd.write(report_data)
 
-        if len(res.stderr) > 0:
-            print(f"Seems an error occured, see {profdata_dir}/llvm-cov.stderr for more information")
-            with open(f"{profdata_dir}/llvm-cov.stderr", "wb") as fd:
-                fd.write(res.stderr)
-        with open(f"{profdata_dir}/llvm-cov.json", "wb") as fd:
-            fd.write(res.stdout)
+            if len(res.stderr) > 0:
+                print(f"Seems an error occured, see {profdata_dir}/llvm-cov.stderr for more information")
+                with open(f"{profdata_dir}/llvm-cov.stderr", "wb") as fd:
+                    fd.write(res.stderr)
+            with open(f"{profdata_dir}/llvm-cov.json", "wb") as fd:
+                fd.write(res.stdout)
 
         profdata_file.unlink()
-    jobs_done += 1
-    print(f"[{jobs_done}/{all_jobs_len}] Export done ({trial} - {base_dir.name})")
+    #jobs_done += 1
+    with lock:
+        jobs_done[0] += 1
+    print(f"[{jobs_done[0]}/{all_jobs_len}] Export done ({trial} - {base_dir.name})")
 
     # cleanup to save space
     clean_up(profraw_dir)
@@ -619,6 +627,7 @@ def calc_plot_data(fuzzer_names : set[str] = set(), fuzzer_colors : dict = {}, b
             ts_to_branch = []
             with open(ts_to_branch_file.as_posix(),"r") as fd:
                 ts_to_branch: list[str] = fd.readlines()
+            ts_to_branch = sorted(ts_to_branch)
             ts_list = []
             branches_covered_list = []
             ts_relative = 0
@@ -908,8 +917,10 @@ def process_crashes(base_dir : Path, working_args : Dict[str, Any]) -> None:
 
 def process_trial(trial : int, working_args : Dict[str, Any], base_dir : Path):
     print(f"Processing trial: {trial} on base dir:{base_dir}")
+    lock = Lock()
+    jobs_done = [0]
 
-    return llvm_cov(working_args, str(trial), base_dir)
+    return llvm_cov(working_args, str(trial), base_dir, lock, jobs_done)
 
 def log(log_value : str, log_file = "iterator_trial.txt"):
     print(log_value)
@@ -927,15 +938,14 @@ def run_calc_and_periodic_plot(executor, main_function, periodic_function, base_
     stop_event = threading.Event()
 
     # Start the periodic function in a separate thread
-    periodic_thread = threading.Thread(target=periodic_function, args=(stop_event, interval_seconds, fuzzer_names, base_dir))
-    periodic_thread.start()
+    #periodic_thread = threading.Thread(target=periodic_function, args=(stop_event, interval_seconds, fuzzer_names, base_dir))
+    #periodic_thread.start()
 
     try:
         # Run the main function using the ProcessPoolExecutor
         with concurrent.futures.ThreadPoolExecutor() as thread_executor:
             future = thread_executor.submit(main_function, *main_args)
-            concurrent.futures.wait(future, return_when=concurrent.futures.FIRST_EXCEPTION)
-
+            concurrent.futures.wait([future], return_when=concurrent.futures.FIRST_EXCEPTION)
 
             # Wait for the main function to complete
             future.result()
@@ -948,10 +958,10 @@ def run_calc_and_periodic_plot(executor, main_function, periodic_function, base_
         # Signal the stop event to terminate the periodic function
         stop_event.set()
         # Wait for the periodic function thread to complete
-        periodic_thread.join()
+        #periodic_thread.join()
         
         # create a gif from incremental files
-        gif_up()
+        #gif_up()
 
 def init(fuzzer_names, working_args : Dict[str, Any]) -> list[Path, int]:
     fuzzer_info = []
@@ -1001,12 +1011,13 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--regcheck", action="store_true", default=False, help="List found fuzzers by your given regex")
     parser.add_argument("--pformat", type=str, default="png", help="Save plots as FORMAT")
     parser.add_argument("--crash_binary", type=Path, help="Path to binary to test crashes (e.g. compiled with ASAN)")
+    parser.add_argument("--accuracy", type=float, default=0.5, help="Accuracy of the line coverage plot [0.0-1.0] (0: fastest / no useful line plot, 1: most accurate line plot)")
 
     return parser.parse_args(raw_args)
 
 
 def main(raw_args: Optional[Sequence[str]] = None):
-    global skip_corpus, show_bands, regex, num_trials, llvm_version, all_jobs_len
+    global skip_corpus, show_bands, regex, num_trials, llvm_version, all_jobs_len, accuracy
     
     args: Namespace = parse_arguments(raw_args)
     working_args: dict = gen_arguments(args)
@@ -1014,6 +1025,10 @@ def main(raw_args: Optional[Sequence[str]] = None):
     show_bands = args.show_bands
     regex = args.regex
     num_trials = args.trials
+    
+    if args.accuracy < 0.0 or args.accuracy > 1.0:
+        print("Accuracy must be between 0 and 10")
+        exit()
     
     # check which version of llvm is installed
     llvm_version = subprocess.run(["llvm-config", "--version"], capture_output=True).stdout.decode("utf-8").split(".")[0]
