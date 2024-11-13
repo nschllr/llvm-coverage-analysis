@@ -47,6 +47,7 @@ num_trials = 0
 llvm_version = None
 all_jobs_len = 0
 accuracy = 0.0
+jobs_done = [0]
 
 
 def get_testcases(corpus_path: Path) -> list[Path]:
@@ -190,7 +191,7 @@ def calculate_cov_branches(json_data):
     traverse(json_data, add_st)
     return len(st)
 
-def llvm_cov(working_args, trial: str, base_dir: Path, lock, jobs_done) -> tuple[bool, Path]:
+def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
     
     trial = f"trial_{trial}"
     full_corpus : Path = base_dir / "tmp" / "full_corpus"
@@ -314,8 +315,11 @@ def llvm_cov(working_args, trial: str, base_dir: Path, lock, jobs_done) -> tuple
         print(f"[{jobs_done[0]}/{all_jobs_len}] Processing (merge profdata) ({trial} - {base_dir.name}): {id}/{len(profdata_files)} -- {round(id / len(profdata_files)*100,2)}%")
         
         execute_cmd(llvm_profdata_cmd.split(" "), check = True)
-        
-        if id % int(len(profdata_files) * accuracy) == 0 and id > 0 or id == len(profdata_files) - 1:
+        boundary = int(len(profdata_files) * accuracy)
+        if boundary < 1:
+            boundary = 1
+            
+        if id % boundary == 0 and id > 0 or id == len(profdata_files) - 1:
             llvm_export_cmd = f"llvm-cov-{llvm_version} export -format=text -region-coverage-gt=0 {target_bin} -instr-profile={profdata_file_final}"
             print(f"[{jobs_done[0]}/{all_jobs_len}] Running export command ({trial} - {base_dir.name})")
             res = execute_cmd(llvm_export_cmd.split(" "), capture_output=True)
@@ -344,8 +348,8 @@ def llvm_cov(working_args, trial: str, base_dir: Path, lock, jobs_done) -> tuple
 
         profdata_file.unlink()
     #jobs_done += 1
-    with lock:
-        jobs_done[0] += 1
+    #with lock:
+    #    jobs_done[0] += 1
     print(f"[{jobs_done[0]}/{all_jobs_len}] Export done ({trial} - {base_dir.name})")
 
     # cleanup to save space
@@ -713,7 +717,7 @@ def calc_plot_data(fuzzer_names : set[str] = set(), fuzzer_colors : dict = {}, b
     return fuzzer_to_cov
 
 
-def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False, save_format = "png", work_dir = Path("work")) -> None:
+def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False, save_format = "png", work_dir = Path("work"), plot_desciption = "") -> None:
 
     rcParams.update({'figure.autolayout': True})
     plot_dir = work_dir / "plots"
@@ -741,6 +745,7 @@ def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, f
     ax1.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 6})
     fig1.tight_layout() 
     plt.autoscale()
+    plt.title(plot_desciption)
     plt.savefig(f"{plot_dir.as_posix()}/line_median.{plot_suffix}", format=plot_suffix, bbox_inches="tight")
     
     if while_calc:
@@ -756,7 +761,10 @@ def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, f
         fig2.tight_layout() 
         plt.autoscale()
         plt.xticks(fontsize=8, rotation=75)
+        plt.title(plot_desciption)
         plt.savefig(f"{plot_dir.as_posix()}/bar_median.{plot_suffix}", format=plot_suffix, bbox_inches="tight")
+        
+    print(plot_desciption)
 
 def plot_cov_line(ax, fuzzer_to_cov : Dict[str, Dict], plot_crashes, while_calc : bool = False): # type: ignore
 
@@ -917,10 +925,8 @@ def process_crashes(base_dir : Path, working_args : Dict[str, Any]) -> None:
 
 def process_trial(trial : int, working_args : Dict[str, Any], base_dir : Path):
     print(f"Processing trial: {trial} on base dir:{base_dir}")
-    lock = Lock()
-    jobs_done = [0]
 
-    return llvm_cov(working_args, str(trial), base_dir, lock, jobs_done)
+    return llvm_cov(working_args, str(trial), base_dir)
 
 def log(log_value : str, log_file = "iterator_trial.txt"):
     print(log_value)
@@ -1012,6 +1018,7 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--pformat", type=str, default="png", help="Save plots as FORMAT")
     parser.add_argument("--crash_binary", type=Path, help="Path to binary to test crashes (e.g. compiled with ASAN)")
     parser.add_argument("--accuracy", type=float, default=0.5, help="Accuracy of the line coverage plot [0.0-1.0] (0: fastest / no useful line plot, 1: most accurate line plot)")
+    parser.add_argument("--plot_desc", type=str, default="", help="Description for the plot")
 
     return parser.parse_args(raw_args)
 
@@ -1025,10 +1032,12 @@ def main(raw_args: Optional[Sequence[str]] = None):
     show_bands = args.show_bands
     regex = args.regex
     num_trials = args.trials
+    plot_desc = args.plot_desc
     
     if args.accuracy < 0.0 or args.accuracy > 1.0:
         print("Accuracy must be between 0 and 10")
         exit()
+    accuracy = args.accuracy
     
     # check which version of llvm is installed
     llvm_version = subprocess.run(["llvm-config", "--version"], capture_output=True).stdout.decode("utf-8").split(".")[0]
@@ -1085,7 +1094,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
     if args.plot:
         print(fuzzer_names)
         base_dir = args.work_dir / Path("coverage_analysis")
-        plotting(set(fuzzer_names), base_dir=base_dir, plot_crashes=args.crashes, save_format = args.pformat)
+        plotting(set(fuzzer_names), base_dir=base_dir, plot_crashes=args.crashes, save_format = args.pformat, plot_desciption=plot_desc)
 
     if args.gif:
         gif_up()
