@@ -48,11 +48,21 @@ llvm_version = None
 all_jobs_len = 0
 accuracy = 0.0
 jobs_done = [0]
+other_testcase_dir = None
 
 
 def get_testcases(corpus_path: Path) -> list[Path]:
     print(f"Gathering testcases from {corpus_path.as_posix()}")
     testcases = sorted(list(corpus_path.glob("id:*")))
+    
+    if other_testcase_dir is not None:
+        if (corpus_path / other_testcase_dir).exists():
+            other_testcases = sorted(list(other_testcase_dir.glob("id:*")))
+            testcases.extend(other_testcases)
+            testcases.sort()
+        else:
+            print(f"Other testcases directory not found: skipping {other_testcase_dir}")
+        
     return testcases
 
 def get_starttime(fuzzer_stats_path : Path) -> str:
@@ -995,7 +1005,7 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser: ArgumentParser = ArgumentParser(description="Controller for AFL++ restarting instances")
     
     parser.add_argument("--work_dir", type=Path, default=None, help="Path where to store the results")
-    parser.add_argument("--corpus", type=Path, default=None, help="Path to corpus base")
+    parser.add_argument("--corpus", type=Path, default=None, help="Path to corpus base (results of all fuzzers and all trials)")
     parser.add_argument("--trials", type=int, default=10, help="Number of trials")
     parser.add_argument("--target", type=str, default="objdump", help="Target name")
     parser.add_argument("--cov_bin", type=Path, default="", help="Path to llvm compiled coverage binary")
@@ -1019,12 +1029,13 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--crash_binary", type=Path, help="Path to binary to test crashes (e.g. compiled with ASAN)")
     parser.add_argument("--accuracy", type=float, default=0.5, help="Accuracy of the line coverage plot [0.0-1.0] (0: fastest / no useful line plot, 1: most accurate line plot)")
     parser.add_argument("--plot_desc", type=str, default="", help="Description for the plot")
+    parser.add_argument("--other_testcases", type=str, default="", help="other path to testcases within queue directory, eg. '.state/XXXX'")
 
     return parser.parse_args(raw_args)
 
 
 def main(raw_args: Optional[Sequence[str]] = None):
-    global skip_corpus, show_bands, regex, num_trials, llvm_version, all_jobs_len, accuracy
+    global skip_corpus, show_bands, regex, num_trials, llvm_version, all_jobs_len, accuracy, other_testcase_dir
     
     args: Namespace = parse_arguments(raw_args)
     working_args: dict = gen_arguments(args)
@@ -1033,6 +1044,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
     regex = args.regex
     num_trials = args.trials
     plot_desc = args.plot_desc
+    other_testcase_dir = args.other_testcases
     
     if args.accuracy < 0.0 or args.accuracy > 1.0:
         print("Accuracy must be between 0 and 10")
