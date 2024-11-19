@@ -1029,7 +1029,7 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--crash_binary", type=Path, help="Path to binary to test crashes (e.g. compiled with ASAN)")
     parser.add_argument("--accuracy", type=float, default=0.5, help="Accuracy of the line coverage plot [0.0-1.0] (0: fastest / no useful line plot, 1: most accurate line plot)")
     parser.add_argument("--plot_desc", type=str, default="", help="Description for the plot")
-    parser.add_argument("--other_testcases", type=str, default="", help="other path to testcases within queue directory, eg. '.state/XXXX'")
+    parser.add_argument("--other_testcases", type=Path, default="", help="other path to testcases within queue directory, eg. '.state/XXXX'")
 
     return parser.parse_args(raw_args)
 
