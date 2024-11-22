@@ -752,7 +752,7 @@ def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, f
     # Add a legend for each unique color
     handles, labels = plt.gca().get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
-    ax1.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 6})
+    ax1.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 6},ncols=2)
     fig1.tight_layout() 
     plt.autoscale()
     plt.title(plot_desciption)
@@ -771,7 +771,7 @@ def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, f
         fig2.tight_layout() 
         plt.autoscale()
         plt.xticks(fontsize=8, rotation=75)
-        plt.title(plot_desciption)
+        plt.title(plot_desciption, size = 10)
         plt.savefig(f"{plot_dir.as_posix()}/bar_median.{plot_suffix}", format=plot_suffix, bbox_inches="tight")
         
     print(plot_desciption)
@@ -1029,6 +1029,7 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--crash_binary", type=Path, help="Path to binary to test crashes (e.g. compiled with ASAN)")
     parser.add_argument("--accuracy", type=float, default=0.5, help="Accuracy of the line coverage plot [0.0-1.0] (0: fastest / no useful line plot, 1: most accurate line plot)")
     parser.add_argument("--plot_desc", type=str, default="", help="Description for the plot")
+    parser.add_argument("--color_file", type=Path, default="", help="Path to a file containing fuzzer names and colors")
     parser.add_argument("--other_testcases", type=Path, default="", help="other path to testcases within queue directory, eg. '.state/XXXX'")
 
     return parser.parse_args(raw_args)
@@ -1104,9 +1105,15 @@ def main(raw_args: Optional[Sequence[str]] = None):
         print("not implemented")
 
     if args.plot:
+        fuzzer_colors = {}
+        
+        if args.color_file and args.color_file.exists():
+            with open(args.color_file, "r") as fd:
+                fuzzer_colors = json.load(fd)                            
+        
         print(fuzzer_names)
         base_dir = args.work_dir / Path("coverage_analysis")
-        plotting(set(fuzzer_names), base_dir=base_dir, plot_crashes=args.crashes, save_format = args.pformat, plot_desciption=plot_desc)
+        plotting(set(fuzzer_names), base_dir=base_dir, plot_crashes=args.crashes, save_format = args.pformat, plot_desciption=plot_desc, fuzzer_colors=fuzzer_colors)
 
     if args.gif:
         gif_up()
