@@ -336,8 +336,9 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
             res = execute_cmd(llvm_export_cmd.split(" "), capture_output=True)
             report_data = json.loads(res.stdout)
             
-            branch_count = calculate_cov_branches(report_data["data"][0]["files"])
-            #branch_count = get_branches_covered(report_data)
+            # branch_count = calculate_cov_branches(report_data["data"][0]["files"])
+            # branch_count = get_branches_covered(report_data)
+            branch_count = report_data["data"][0]["totals"]["branches"]["covered"]
             
             timestamp_to_b_covered.append((timestamp, branch_count))
 
