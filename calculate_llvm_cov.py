@@ -53,7 +53,8 @@ other_testcase_dir = None
 
 def get_testcases(corpus_path: Path) -> list[Path]:
     print(f"Gathering testcases from {corpus_path.as_posix()}")
-    testcases = sorted(list(corpus_path.glob("id:*")))
+    # filter out .state directories (redundant_edges ...)
+    testcases = sorted(tc for tc in corpus_path.glob("id:*") if not ".state" in tc.as_posix())
     
     if other_testcase_dir is not None:
         if (corpus_path / other_testcase_dir).exists():
