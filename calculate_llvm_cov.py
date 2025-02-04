@@ -729,10 +729,10 @@ def calc_plot_data(fuzzer_names : set[str] = set(), fuzzer_colors : dict = {}, b
     return fuzzer_to_cov
 
 
-def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False, save_format = "png", work_dir = Path("work"), plot_desciption = "") -> None:
+def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False, save_format = "png", plot_desciption = "") -> None:
 
     rcParams.update({'figure.autolayout': True})
-    plot_dir = work_dir / "plots"
+    plot_dir = base_dir.parent / "plots"
 
     if not plot_dir.exists():
         plot_dir.mkdir()
