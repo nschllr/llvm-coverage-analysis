@@ -326,7 +326,8 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
         print(f"[{jobs_done[0]}/{all_jobs_len}] Processing (merge profdata) ({trial} - {base_dir.name}): {id}/{len(profdata_files)} -- {round(id / len(profdata_files)*100,2)}%")
         
         execute_cmd(llvm_profdata_cmd.split(" "), check = True)
-        boundary = int(len(profdata_files) * accuracy)
+        accuracy_corrected = 1.0 - accuracy
+        boundary = int(len(profdata_files) * accuracy_corrected)
         if boundary < 1:
             boundary = 1
             
