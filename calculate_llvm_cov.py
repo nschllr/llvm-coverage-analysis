@@ -326,12 +326,16 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
         print(f"[{jobs_done[0]}/{all_jobs_len}] Processing (merge profdata) ({trial} - {base_dir.name}): {id}/{len(profdata_files)} -- {round(id / len(profdata_files)*100,2)}%")
         
         execute_cmd(llvm_profdata_cmd.split(" "), check = True)
-        accuracy_corrected = 1.0 - accuracy
+        accuracy_corrected = round(1.0 - accuracy,2)
         boundary = int(len(profdata_files) * accuracy_corrected)
         if boundary < 1:
             boundary = 1
-            
-        if id % boundary == 0 and id > 0 or id == len(profdata_files) - 1:
+        
+        # export the first 10 profdata files if the accuracy is greater than 0.5 and after that use the boundary
+        # this is due to the fact the in first few minutes / hours more coverage is found than later
+        profdata_5_perc = int(len(profdata_files) * 0.05)
+        # if id % boundary == 0 and id > 0 or id == len(profdata_files) - 1:
+        if (id in range(0,profdata_5_perc) and accuracy > 0.5) or (id % boundary == 0 and id > 0 or id == len(profdata_files) - 1):
             llvm_export_cmd = f"llvm-cov-{llvm_version} export -format=text -region-coverage-gt=0 {target_bin} -instr-profile={profdata_file_final}"
             print(f"[{jobs_done[0]}/{all_jobs_len}] Running export command ({trial} - {base_dir.name})")
             res = execute_cmd(llvm_export_cmd.split(" "), capture_output=True)
@@ -1051,7 +1055,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
     other_testcase_dir = args.other_testcases
     
     if args.accuracy < 0.0 or args.accuracy > 1.0:
-        print("Accuracy must be between 0 and 10")
+        print("Accuracy must be between 0 and 1.0")
         exit()
     accuracy = args.accuracy
     
