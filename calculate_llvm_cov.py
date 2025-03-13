@@ -685,22 +685,30 @@ def calc_plot_data(fuzzer_names : set[str] = set(), fuzzer_colors : dict = {}, b
                         ts +=1
                         ts_relative += 1
                         break
-
+            print(f"ts_to_branch_file: {ts_to_branch_file} --- last branch: {branches_covered_list[-1]}")
             trial_results_branches.append(branches_covered_list)
             trial_results_ts.append(ts_list)
 
         if len(trial_results_branches) == 0:
             continue
         all_trial_branches = []
-        min_num_entries: int = min([len(x) for x in trial_results_branches])
-        if min_num_entries < 2:
+        max_num_entries: int = max([len(x) for x in trial_results_branches])
+        
+        corrected_trial_results_branches = []
+        for trial_branches in trial_results_branches:
+        
+            if len(trial_branches) < max_num_entries:
+                trial_branches.extend([trial_branches[-1]] * (max_num_entries - len(trial_branches)))
+            corrected_trial_results_branches.append(trial_branches)
+                
+        if max_num_entries < 2:
             continue
-        for idx in range(min_num_entries):
+        for idx in range(max_num_entries):
             value_series = []
-            for trial_idx in range(len(trial_results_branches)):
-                value_series.append(trial_results_branches[trial_idx][idx])  
+            for trial_idx in range(len(corrected_trial_results_branches)):
+                value_series.append(corrected_trial_results_branches[trial_idx][idx])
+                print(f"{corrected_trial_results_branches[trial_idx][idx]=}")
             all_trial_branches.append(value_series)
-
 
         lower = []
         upper = []
