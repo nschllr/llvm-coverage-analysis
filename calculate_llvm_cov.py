@@ -335,8 +335,8 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
         # this is due to the fact the in first few minutes / hours more coverage is found than later
         profdata_5_perc = int(len(profdata_files) * 0.05)
         # if id % boundary == 0 and id > 0 or id == len(profdata_files) - 1:
-        if (id in range(0,profdata_5_perc) and accuracy > 0.5) or (id % boundary == 0 and id > 0 or id == len(profdata_files) - 1):
-            llvm_export_cmd = f"llvm-cov-{llvm_version} export -format=text -region-coverage-gt=0 {target_bin} -instr-profile={profdata_file_final}"
+        if (id == 0) or (id in range(0,profdata_5_perc) and accuracy > 0.5) or ((id % boundary == 0 and id > 0) or id == len(profdata_files) - 1): 
+            llvm_export_cmd = f"llvm-cov-{llvm_version} export -format=text -region-coverage-gt=0 {target_bin} -skip-expansions -instr-profile={profdata_file_final}"
             print(f"[{jobs_done[0]}/{all_jobs_len}] Running export command ({trial} - {base_dir.name})")
             res = execute_cmd(llvm_export_cmd.split(" "), capture_output=True)
             report_data = json.loads(res.stdout)
@@ -362,6 +362,9 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
                     fd.write(res.stderr)
             with open(f"{profdata_dir}/llvm-cov.json", "wb") as fd:
                 fd.write(res.stdout)
+                
+            with open(f"{profdata_dir}/export_info.txt", "w") as fd:
+                fd.write(f"ID: {id}/{len(profdata_files)}\t timestamp: {timestamp} \tbranch count: {branch_count}\n")
 
         profdata_file.unlink()
     #jobs_done += 1
