@@ -707,7 +707,7 @@ def calc_plot_data(fuzzer_names : set[str] = set(), fuzzer_colors : dict = {}, b
             value_series = []
             for trial_idx in range(len(corrected_trial_results_branches)):
                 value_series.append(corrected_trial_results_branches[trial_idx][idx])
-                print(f"{corrected_trial_results_branches[trial_idx][idx]=}")
+                #print(f"{corrected_trial_results_branches[trial_idx][idx]=}")
             all_trial_branches.append(value_series)
 
         lower = []
