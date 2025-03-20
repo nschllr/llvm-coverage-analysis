@@ -848,7 +848,7 @@ def plot_cov_bar(ax, fuzzer_to_cov : Dict[str, Dict]): # type: ignore
         median: list[int] = fuzzer_data["median"]
         upper : list[int] = fuzzer_data["upper"]
         lower : list[int] = fuzzer_data["lower"]
-        print(f"lower: {lower[-1]}\tmedian: {median[-1]}\tupper: {upper[-1]}")
+        print(f"{fuzzer_name} -\tlower: {lower[-1]}\tmedian: {median[-1]}\tupper: {upper[-1]}")
         ax.bar(fuzzer_name, median[-1], color=fuzzer_color)
         ax.bar(fuzzer_name, upper[-1], color=fuzzer_color, alpha = 0.25)
         ax.bar(fuzzer_name, lower[-1], color="w", alpha = 0.25)       
