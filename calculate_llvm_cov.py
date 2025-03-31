@@ -273,7 +273,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
             cov_time = testcase_time
         else:
             # some afl++ version did not assign a time to "orig:" testcases
-            if "time" not in testcase.name:
+            if ",time:" not in testcase.name:
                 testcase_time = 0
             else:
                 testcase_time = testcase.name.split(",time:")[1].split(",")[0]
