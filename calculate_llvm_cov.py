@@ -39,6 +39,11 @@ import hashlib
 from natsort import natsorted
 import random
 
+from matplotlib import rc
+
+rc('font', **{'family': 'serif', 'serif': ['Computer Modern']})
+rc('text', usetex=True)
+
 CONTAINER_NAME = "llvm_cov_analysis"
 skip_corpus = False
 show_bands = False
@@ -176,6 +181,7 @@ def group_files_by_minute(files : list[Path]):
         timestamp = extract_timestamp(file)
         minute = datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M') # type: ignore
         file_groups[minute].append(file)
+        #print(f"Grouping file {file} under minute {minute}")
     return file_groups
 
 def calculate_cov_branches(json_data):
@@ -202,57 +208,28 @@ def calculate_cov_branches(json_data):
     traverse(json_data, add_st)
     return len(st)
 
-def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
-    
-    trial = f"trial_{trial}"
-    full_corpus : Path = base_dir / "tmp" / "full_corpus"
-    profraw_dir : Path = base_dir / "profraw_files" / trial
-    profdata_dir : Path = base_dir / "profdata_files" / trial
-    target_bin = working_args["cov_bin"]
-    target_args = working_args["target_args"]
-    clean_up(profdata_dir, create = True)
+def find_fuzzer_stats_for_queue(q: Path) -> Path:
+    # Usually: .../default/queue  -> .../default/fuzzer_stats
+    cand = q.parent / "fuzzer_stats"
+    if cand.exists():
+        return cand
+    # Fallback: nearest fuzzer_stats upward in this run tree
+    for parent in q.parents:
+        fs = parent / "fuzzer_stats"
+        if fs.exists():
+            return fs
+    raise FileNotFoundError(f"No fuzzer_stats found for queue dir: {q}")
 
-    print("Starting llvm coverage analysis")
-
-    testcases_to_starttime: list[tuple] = []
-    starttime = ""
-    testcases = []
-    
-    print("full_corpus:",full_corpus / trial)
-
-    queue_dirs : list[Path] = natsorted(list(Path(full_corpus / trial).glob("**/queue")))
-    fuzzer_stats_paths : list[Path] = natsorted(list(Path(full_corpus / trial).glob("**/fuzzer_stats")))
-
-    # there should be the same amount of fuzzer_stats files as queue_dirs otherwise, something is wrong
-    assert len(queue_dirs) > 0, f"Found no queue dirs: {len(queue_dirs)} -- {queue_dirs} "
-    assert len(fuzzer_stats_paths) > 0, f"Found no queue dirs: {len(fuzzer_stats_paths)} -- {fuzzer_stats_paths} "
-
-    if len(queue_dirs) != len(fuzzer_stats_paths):
-        print(f"Found a different amount of fuzzer_stats files and queue directorys: Queues: {len(queue_dirs)} -- stats: {len(fuzzer_stats_paths)}")
-        assert len(queue_dirs) == len(fuzzer_stats_paths), "different len of queue and fuzzer_stats"
-
-    legacy_afl : bool | None = None
-
-    for queue_dir, fuzzer_stats in zip(queue_dirs, fuzzer_stats_paths):
-        testcases: list[Path] = get_testcases(queue_dir)
-        starttime: str = get_starttime(fuzzer_stats)
-        afl_version: str = get_afl_version(fuzzer_stats)
-        # asume that all queues of the fuzzer have the same afl version -- so the first one will do it
-        if legacy_afl is None:
-            legacy_afl = check_legacy_afl(afl_version)
-
-        testcases_to_starttime.extend(list(zip([afl_version] * len(testcases), [starttime] * len(testcases), testcases)))
-
+def gen_profraw_data(testcases_to_starttime: list[tuple], start, target_bin: Path, target_args: str, profraw_dir: Path, trial, base_dir: Path, legacy_afl: bool):
     print(f"Generating profraw data from testcases... ({trial} - {base_dir.name})")
     cov_times = []
-    clean_up(profdata_dir, create = True)
     tts_len = len(testcases_to_starttime)
 
-    for i, testcase_to_starttime in enumerate(testcases_to_starttime):
+    for i, testcase_to_starttime in enumerate(testcases_to_starttime, start=start):
         afl_version, starttime, testcase = testcase_to_starttime
         
         if i % int(tts_len * 0.2) == 0:
-            print(f"[{jobs_done[0]}/{all_jobs_len}] Processing Testcase {trial} - {base_dir.name}:\t {i}/{len(testcases_to_starttime)} -- {round(i / len(testcases_to_starttime)*100,2)}%")
+            print(f"[{jobs_done[0]}/{all_jobs_len}] Processing Testcase {trial} - {base_dir.name}:\t {i}/{start+len(testcases_to_starttime)} -- {round(i / (start+len(testcases_to_starttime))*100,2)}%")
             
         if i % int(tts_len * 0.3) == 0 and i > 0 or i == len(testcases_to_starttime) - 1:
             profraw_files : list[Path] = sorted(list(profraw_dir.iterdir()))
@@ -262,7 +239,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
             with concurrent.futures.ProcessPoolExecutor() as executor:
                 futures = []
                 for minute, files in file_groups.items():
-                    # merge_by_minute_single(files, minute, trial)
+                    #merge_by_minute_single(files, minute, trial)
                     futures.append(executor.submit(merge_by_minute_single, files, minute, trial))
                 concurrent.futures.wait(futures)
 
@@ -281,8 +258,11 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
                 if "+" in testcase_time:
                     testcase_time = testcase_time.split("+")[0] 
             cov_time = int(starttime) + int(testcase_time) // 1000
+            #print(f"testcase: {testcase} \t testcase_time: {testcase_time} \t starttime: {starttime} \t cov_time: {cov_time}")
         cov_times.append(cov_time)
         profraw_file = f"{profraw_dir}/llvm_{i:08d}_ts:{cov_time}.profraw"
+        assert Path(profraw_file).exists() == False, f"profraw file already exists: {profraw_file}"
+        
         os.environ["LLVM_PROFILE_FILE"] = profraw_file
 
         target_args_w_input = target_args
@@ -293,6 +273,58 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
         llvm_target_cmd = f"{target_bin} {target_args_w_input}"
         execute_cmd(llvm_target_cmd.split(" "))
     print(f"\nGenerating profraw files done ({trial} - {base_dir.name})!")
+
+def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
+    
+    trial = f"trial_{trial}"
+    full_corpus : Path = base_dir / "tmp" / "full_corpus"
+    profraw_dir : Path = base_dir / "profraw_files" / trial
+    profdata_dir : Path = base_dir / "profdata_files" / trial
+    target_bin = working_args["cov_bin"]
+    target_args = working_args["target_args"]
+    clean_up(profdata_dir, create = True)
+
+    print("Starting llvm coverage analysis")
+
+    starttime = ""
+    testcases = []
+    
+    print("full_corpus:",full_corpus / trial)
+
+    queue_dirs : list[Path] = natsorted(list(Path(full_corpus / trial).glob("**/queue")))
+    fuzzer_stats_paths : list[Path] = natsorted(list(Path(full_corpus / trial).glob("**/fuzzer_stats")))
+
+    # there should be the same amount of fuzzer_stats files as queue_dirs otherwise, something is wrong
+    assert len(queue_dirs) > 0, f"Found no queue dirs: {len(queue_dirs)} -- {queue_dirs} "
+    assert len(fuzzer_stats_paths) > 0, f"Found no queue dirs: {len(fuzzer_stats_paths)} -- {fuzzer_stats_paths} "
+
+    if len(queue_dirs) != len(fuzzer_stats_paths):
+        print(f"Found a different amount of fuzzer_stats files and queue directorys: Queues: {len(queue_dirs)} -- stats: {len(fuzzer_stats_paths)}")
+        assert len(queue_dirs) == len(fuzzer_stats_paths), "different len of queue and fuzzer_stats"
+
+    legacy_afl : bool | None = None
+
+    clean_up(profdata_dir, create = True)
+    start = 0
+    for queue_dir in queue_dirs:
+        testcases_to_starttime: list[tuple] = [] 
+        fuzzer_stats = find_fuzzer_stats_for_queue(queue_dir)
+        print(queue_dir)
+        print(fuzzer_stats, "\n")
+
+        testcases = get_testcases(queue_dir)
+        starttime  = get_starttime(fuzzer_stats)
+        afl_version = get_afl_version(fuzzer_stats)
+        if legacy_afl is None:
+            legacy_afl = check_legacy_afl(afl_version)
+            
+        print(f"queue_dir: {queue_dir}\nfuzzer_stats: {fuzzer_stats}\t starttime: {starttime}")
+
+        testcases_to_starttime.extend((afl_version, starttime, tc) for tc in testcases)
+        
+        gen_profraw_data(testcases_to_starttime, start, target_bin, target_args, profraw_dir, trial, base_dir, legacy_afl)
+        start += len(testcases_to_starttime)
+    
 
     # profraw_files : list[Path] = sorted(list(profraw_dir.iterdir()))
     # file_groups = group_files_by_minute(profraw_files)
@@ -323,7 +355,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
             llvm_profdata_cmd: str = f"llvm-profdata-{llvm_version} merge -sparse {profdata_file} -o {profdata_file_final}"
 
         #print(f"Running command ({trial} - {base_dir.name}): {llvm_profdata_cmd}")
-        print(f"[{jobs_done[0]}/{all_jobs_len}] Processing (merge profdata) ({trial} - {base_dir.name}): {id}/{len(profdata_files)} -- {round(id / len(profdata_files)*100,2)}%")
+        print(f"[{jobs_done[0]}/{all_jobs_len}] Processing (merge profdata) ({trial} - {base_dir.name} -- timestamp: {datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M')}): {id}/{len(profdata_files)} -- {round(id / len(profdata_files)*100,2)}%")
         
         execute_cmd(llvm_profdata_cmd.split(" "), check = True)
         accuracy_corrected = round(1.0 - accuracy,2)
@@ -394,8 +426,8 @@ def merge_by_minute_single(files : list[Path], minute, trial):
     execute_cmd(llvm_profdata_cmd.split(" "), check=True)
 
     # deleting old files
-    for profdata_file in files:
-        profdata_file.unlink()
+    for profraw_file in files:
+        profraw_file.unlink()
     Path(profdata_save_file).unlink()
 
 def clean_up(dir_path : Path, create : bool = False):
@@ -575,8 +607,10 @@ def calc_plot_data(fuzzer_names : set[str] = set(), fuzzer_colors : dict = {}, b
     used_colors = set()
 
     if len(fuzzer_names) > 0 and len(fuzzer_colors) == 0:
-        for fuzzer_name in fuzzer_names:
-            if len(fuzzer_names) < 10:
+        for fuzzer_name in sorted(fuzzer_names):
+            if len(fuzzer_names) == 2:
+                fuzzer_colors.update({fuzzer_name: "tab:blue" if len(fuzzer_colors) < 1 else "tab:orange"})
+            elif len(fuzzer_names) > 2 and len(fuzzer_names) <= 10:
                 fuzzer_color = random.choice(list(mcolors.TABLEAU_COLORS.keys()))
                 while fuzzer_color in list(fuzzer_colors.values()):
                     fuzzer_color = random.choice(list(mcolors.TABLEAU_COLORS.keys()))
@@ -646,6 +680,7 @@ def calc_plot_data(fuzzer_names : set[str] = set(), fuzzer_colors : dict = {}, b
         trial_results_ts: list[list] = []
 
         ts_relative_crash_list = []
+        trial_to_branches = []
         
         for ts_to_branch_file in all_trial_paths:
             ts_to_branch = []
@@ -685,9 +720,18 @@ def calc_plot_data(fuzzer_names : set[str] = set(), fuzzer_colors : dict = {}, b
                         ts +=1
                         ts_relative += 1
                         break
-            print(f"ts_to_branch_file: {ts_to_branch_file} --- last branch: {branches_covered_list[-1]}")
+            #print(f"ts_to_branch_file: {ts_to_branch_file} --- last branch: {branches_covered_list[-1]}")
+            trial_to_branches.append((ts_to_branch_file, branches_covered_list[-1])) # type: ignore
             trial_results_branches.append(branches_covered_list)
             trial_results_ts.append(ts_list)
+        print(trial_to_branches)
+
+        for e,i in enumerate(sorted(trial_to_branches, key=lambda x: x[1])):
+            if e == len(trial_to_branches)//2:
+                print(f"{i[0]} ----- covered branches: {i[1]} <--- MEDIAN")
+                median_run = i
+            else:
+                print(f"{i[0]} ----- covered branches: {i[1]}")
 
         if len(trial_results_branches) == 0:
             continue
@@ -720,7 +764,7 @@ def calc_plot_data(fuzzer_names : set[str] = set(), fuzzer_colors : dict = {}, b
             
             #print(f"Calculating percentile: {l_perc} - {u_perc}")
             for values in all_trial_branches:
-                d_interval = sorted(values)[l_perc:u_perc]
+                d_interval = sorted(values)#[l_perc:u_perc]
                 min_val = d_interval[0]
                 max_val = d_interval[-1]
                 lower.append(min_val)
@@ -745,7 +789,7 @@ def calc_plot_data(fuzzer_names : set[str] = set(), fuzzer_colors : dict = {}, b
     return fuzzer_to_cov
 
 
-def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False, save_format = "png", plot_desciption = "") -> None:
+def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False, save_format = "png", plot_desciption = "", annotation_file = None) -> None:
 
     rcParams.update({'figure.autolayout': True})
     plot_dir = base_dir.parent / "plots"
@@ -761,16 +805,17 @@ def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, f
     if not Path(plot_dir / "incremental").exists():
         Path(plot_dir / "incremental").mkdir()
     fuzzer_to_cov: Dict[str, Dict] = calc_plot_data(fuzzer_names, fuzzer_colors, base_dir) # type: ignore
-    fig1, ax1 = plt.subplots()
-    ax1 = plot_cov_line(ax1, fuzzer_to_cov, plot_crashes, while_calc=while_calc)
-    ax1.set_xlabel("Time (s)", fontsize=8)
-    ax1.set_ylabel("Reached branch coverage",fontsize=8)
+    fig1, ax1 = plt.subplots(figsize=(6,5))
+    ax1 = plot_cov_line(ax1, fuzzer_to_cov, plot_crashes, while_calc=while_calc,annotation_file=annotation_file)
+    ax1.set_xlabel("Time (hours)", fontsize=10)
+    ax1.set_ylabel("Branches Covered",fontsize=10)
     ax1.set_ylim(ymin=0)
+    #ax1.set_yscale('log')
 
     # Add a legend for each unique color
     handles, labels = plt.gca().get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
-    ax1.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 6},ncols=2)
+    ax1.legend(by_label.values(), by_label.keys(), loc="lower right",  prop={'size': 10},ncols=2)
     fig1.tight_layout() 
     plt.autoscale()
     plt.title(plot_desciption)
@@ -783,37 +828,46 @@ def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, f
     if not while_calc:
         fig2, ax2 = plt.subplots()
         ax2 = plot_cov_bar(ax2, fuzzer_to_cov)
-        ax2.set_xlabel("Fuzzer Name", fontsize=8)
-        ax2.set_ylabel("Reached branch coverage", fontsize=8)
+        ax2.set_xlabel("Fuzzer Name", fontsize=10)
+        ax2.set_ylabel("Branches Covered", fontsize=10)
         ax2.set_ylim(ymin=0)
         fig2.tight_layout() 
         plt.autoscale()
-        plt.xticks(fontsize=8, rotation=75)
+        plt.xticks(fontsize=10, rotation=75)
         plt.title(plot_desciption, size = 10)
         plt.savefig(f"{plot_dir.as_posix()}/bar_median.{plot_suffix}", format=plot_suffix, bbox_inches="tight")
         
     print(plot_desciption)
 
-def plot_cov_line(ax, fuzzer_to_cov : Dict[str, Dict], plot_crashes, while_calc : bool = False): # type: ignore
+from pathlib import Path
+from typing import Dict
+import numpy as np
+import matplotlib.pyplot as plt
 
-    # fuzzer_to_cov : {fuzzer_name:{"color": fuzzer_color, "median":median,"upper": upper, "lower":lower, "max_time": max_time, "crashes":ts_relative_crash_list,}}
+SEC_TO_HOURS = 1.0 / 3600.0
+
+def plot_cov_line(ax, fuzzer_to_cov: Dict[str, Dict], plot_crashes, while_calc: bool = False, annotation_file = None):  # type: ignore
+    # fuzzer_to_cov : {fuzzer_name:{
+    #   "color": fuzzer_color, "median":median,"upper": upper, "lower":lower,
+    #   "max_time": max_time, "crashes": ts_relative_crash_list,
+    # }}
 
     # fill each fuzzer line to the maximum
     if while_calc:
         max_time_to_fill = 0
     else:
-        max_time_to_fill = max([len(fuzzer_to_cov[fuzzer]["median"]) for fuzzer in fuzzer_to_cov])
+        max_time_to_fill = max(len(fuzzer_to_cov[f]["median"]) for f in fuzzer_to_cov)
 
     for fuzzer_name in fuzzer_to_cov:
         fuzzer_data = fuzzer_to_cov[fuzzer_name]
         fuzzer_color = fuzzer_data["color"]
         median: list[int] = fuzzer_data["median"]
-        upper : list[int] = fuzzer_data["upper"]
-        lower : list[int] = fuzzer_data["lower"]
-        max_time : int  = fuzzer_data["max_time"]
-        ts_relative_crash_list : list = fuzzer_data["crashes"]
+        upper:  list[int] = fuzzer_data["upper"]
+        lower:  list[int] = fuzzer_data["lower"]
+        max_time: int  = fuzzer_data["max_time"]      # seconds
+        ts_relative_crash_list: list = fuzzer_data["crashes"]  # seconds
 
-        last_med = median[-1]
+        last_med   = median[-1]
         last_upper = upper[-1]
         last_lower = lower[-1]
 
@@ -825,19 +879,73 @@ def plot_cov_line(ax, fuzzer_to_cov : Dict[str, Dict], plot_crashes, while_calc 
                 upper.append(last_upper)
                 lower.append(last_lower)
 
-        if show_bands and (len(lower) > 0 and  len(upper) > 0):
-            ax.fill_between(np.arange(len(median[:max_time_to_fill])), lower[:max_time_to_fill], upper[:max_time_to_fill], color=fuzzer_color, alpha = 0.15) # type: ignore
-        ax.plot(np.arange(max_time_to_fill), median[:max_time_to_fill], color=fuzzer_color, alpha = 0.65, label=f"Median-{fuzzer_name}")
-        
-        times = list(np.arange(max_time_to_fill))
-        
-        if plot_crashes:
-            for crash_time in ts_relative_crash_list:
-                if int(crash_time) in times:
-                    index = times.index(crash_time)
+        # x in HOURS
+        x_hours = np.arange(max_time_to_fill) * SEC_TO_HOURS
+        n = len(median[:max_time_to_fill])  # safe length for plotting
 
-                    plt.annotate('$\U00002629$', (crash_time, median[index]), color=fuzzer_color, textcoords="offset points", xytext=(0, -2), ha='center')
+        if show_bands and (len(lower) > 0 and len(upper) > 0):
+            ax.fill_between(
+                x_hours[:n],
+                lower[:max_time_to_fill][:n],
+                upper[:max_time_to_fill][:n],
+                color=fuzzer_color,
+                alpha=0.15  # type: ignore
+            )
+
+        ax.plot(
+            x_hours[:n],
+            median[:max_time_to_fill][:n],
+            color=fuzzer_color,
+            alpha=0.65,
+            label=f"Median-{fuzzer_name}"
+        )
+
+        if plot_crashes:
+            med_arr = median[:max_time_to_fill]
+            for crash_time in ts_relative_crash_list:
+                ct = int(crash_time)
+                if 0 <= ct < len(med_arr):
+                    ax.annotate(
+                        '$\U00002629$',
+                        (ct * SEC_TO_HOURS, med_arr[ct]),
+                        color=fuzzer_color,
+                        textcoords="offset points",
+                        xytext=(0, -2),
+                        ha='center'
+                    )
+
+    # Vertical annotations (timestamps in seconds) -> convert to hours
+    if annotation_file != None:
+        ann = []
+        with open(annotation_file, "r") as fd:
+            for line in fd:
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                try:
+                    ann.append(int(float(s)))
+                except ValueError:
+                    continue
+
+        first_label_drawn = False
+        for t in ann:
+            if 0 <= t < max_time_to_fill:
+                ax.axvline(
+                    x=t * SEC_TO_HOURS,
+                    linestyle='--',
+                    linewidth=0.6,
+                    color='k',
+                    alpha=0.65,
+                    zorder=0,
+                    label=("Restart" if not first_label_drawn else None)
+                )
+                first_label_drawn = True
+
+    ax.set_xlabel("Time (hours)")
+    import matplotlib.ticker as ticker
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(4))
     return ax
+
 
 
 def plot_cov_bar(ax, fuzzer_to_cov : Dict[str, Dict]): # type: ignore
@@ -1043,12 +1151,13 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--parallel_trials", type=int, default=20, help="Maximum number of parallel trials / runs to calculate (to reduce disk usage)")
     parser.add_argument("--crashes", action="store_true", default=False, help="Get crashes")
     parser.add_argument("--regcheck", action="store_true", default=False, help="List found fuzzers by your given regex")
-    parser.add_argument("--pformat", type=str, default="png", help="Save plots as FORMAT")
+    parser.add_argument("--pformat", type=str, default="pdf", help="Save plots as FORMAT")
     parser.add_argument("--crash_binary", type=Path, help="Path to binary to test crashes (e.g. compiled with ASAN)")
     parser.add_argument("--accuracy", type=float, default=0.5, help="Accuracy of the line coverage plot [0.0-1.0] (0: fastest / no useful line plot, 1: most accurate line plot)")
     parser.add_argument("--plot_desc", type=str, default="", help="Description for the plot")
     parser.add_argument("--color_file", type=Path, default=None, help="Path to a file containing fuzzer names and colors")
     parser.add_argument("--other_testcases", type=Path, default="", help="other path to testcases within queue directory, eg. '.state/XXXX'")
+    parser.add_argument("--annotation-file", type=Path, default=None, help="Annotation file for plotting, e.g. to add identifiers to the plot (median run)")
 
     return parser.parse_args(raw_args)
 
@@ -1132,7 +1241,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
         
         print(fuzzer_names)
         base_dir = args.work_dir / Path("coverage_analysis")
-        plotting(set(fuzzer_names), base_dir=base_dir, plot_crashes=args.crashes, save_format = args.pformat, plot_desciption=plot_desc, fuzzer_colors=fuzzer_colors)
+        plotting(set(fuzzer_names), base_dir=base_dir, plot_crashes=args.crashes, save_format = args.pformat, plot_desciption=plot_desc, fuzzer_colors=fuzzer_colors, annotation_file=args.annotation_file)
 
     if args.gif:
         gif_up()
