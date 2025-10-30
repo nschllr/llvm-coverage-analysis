@@ -41,8 +41,8 @@ import random
 
 from matplotlib import rc
 
-rc('font', **{'family': 'serif', 'serif': ['Computer Modern']})
-rc('text', usetex=True)
+# rc('font', **{'family': 'serif', 'serif': ['Computer Modern']})
+# rc('text', usetex=True)
 
 CONTAINER_NAME = "llvm_cov_analysis"
 skip_corpus = False
@@ -56,11 +56,20 @@ jobs_done = [0]
 other_testcase_dir = None
 
 
-def get_testcases(corpus_path: Path) -> list[Path]:
+def get_creation_time(item):
+    return item.stat().st_ctime
+
+def get_testcases(corpus_path: Path, fuzzer_type : str = "afl") -> list[Path]:
     print(f"Gathering testcases from {corpus_path.as_posix()}")
     # filter out .state directories (redundant_edges ...)
-    testcases = sorted(tc for tc in corpus_path.glob("id:*") if not ".state" in tc.as_posix())
     
+    if fuzzer_type == "afl":
+        testcases = sorted(tc for tc in corpus_path.glob("id:*") if not ".state" in tc.as_posix())
+    else:
+
+        testcases_unsrt = corpus_path.iterdir()
+        testcases = sorted(testcases_unsrt, key=get_creation_time)
+            
     if other_testcase_dir is not None:
         if (corpus_path / other_testcase_dir).exists():
             other_testcases = sorted(list(other_testcase_dir.glob("id:*")))
@@ -220,7 +229,7 @@ def find_fuzzer_stats_for_queue(q: Path) -> Path:
             return fs
     raise FileNotFoundError(f"No fuzzer_stats found for queue dir: {q}")
 
-def gen_profraw_data(testcases_to_starttime: list[tuple], start, target_bin: Path, target_args: str, profraw_dir: Path, trial, base_dir: Path, legacy_afl: bool):
+def gen_profraw_data(testcases_to_starttime: list[tuple], start, target_bin: Path, target_args: str, profraw_dir: Path, trial, base_dir: Path, legacy_or_libafl: bool):
     print(f"Generating profraw data from testcases... ({trial} - {base_dir.name})")
     cov_times = []
     tts_len = len(testcases_to_starttime)
@@ -245,8 +254,8 @@ def gen_profraw_data(testcases_to_starttime: list[tuple], start, target_bin: Pat
 
         cov_time: int = 0
 
-        if legacy_afl:
-            testcase_time = int(os.stat(testcase).st_mtime)
+        if legacy_or_libafl:
+            testcase_time = get_creation_time(testcase)
             cov_time = testcase_time
         else:
             # some afl++ version did not assign a time to "orig:" testcases
@@ -273,6 +282,28 @@ def gen_profraw_data(testcases_to_starttime: list[tuple], start, target_bin: Pat
         llvm_target_cmd = f"{target_bin} {target_args_w_input}"
         execute_cmd(llvm_target_cmd.split(" "))
     print(f"\nGenerating profraw files done ({trial} - {base_dir.name})!")
+    
+    
+def preprocess_afl(queue_dir : Path, testcases_to_starttime : list[tuple]) -> tuple[list[tuple], bool]:
+    print(f"Preprocessing afl testcases in {queue_dir}")
+    fuzzer_stats = find_fuzzer_stats_for_queue(queue_dir)
+    testcases: list[Path] = get_testcases(queue_dir)
+    starttime: str = get_starttime(fuzzer_stats)
+    afl_version: str = get_afl_version(fuzzer_stats)
+    legacy_afl = check_legacy_afl(afl_version)
+
+    testcases_to_starttime.extend(list(zip([afl_version] * len(testcases), [starttime] * len(testcases), testcases)))
+    return testcases_to_starttime, legacy_afl
+
+def preprocess_libafl(queue_dir : Path, testcases_to_starttime : list[tuple]) -> list[tuple]:
+    print(f"Preprocessing libafl testcases in {queue_dir}")
+    testcases: list[Path] = get_testcases(queue_dir, fuzzer_type = "libafl")
+    # for libafl we don't have a starttime yet, so we set it to 0
+    starttime: str = int(get_creation_time(testcases[0])).__str__()
+    afl_version: str = "libafl"
+    testcases_to_starttime.extend(list(zip([afl_version] * len(testcases), [starttime] * len(testcases), testcases)))
+    return testcases_to_starttime    
+
 
 def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
     
@@ -282,6 +313,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
     profdata_dir : Path = base_dir / "profdata_files" / trial
     target_bin = working_args["cov_bin"]
     target_args = working_args["target_args"]
+    fuzzer_type = working_args["fuzzer_type"]
     clean_up(profdata_dir, create = True)
 
     print("Starting llvm coverage analysis")
@@ -292,15 +324,35 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
     print("full_corpus:",full_corpus / trial)
 
     queue_dirs : list[Path] = natsorted(list(Path(full_corpus / trial).glob("**/queue")))
-    fuzzer_stats_paths : list[Path] = natsorted(list(Path(full_corpus / trial).glob("**/fuzzer_stats")))
+    # fuzzer_stats_paths : list[Path] = natsorted(list(Path(full_corpus / trial).glob("**/fuzzer_stats")))
 
-    # there should be the same amount of fuzzer_stats files as queue_dirs otherwise, something is wrong
-    assert len(queue_dirs) > 0, f"Found no queue dirs: {len(queue_dirs)} -- {queue_dirs} "
-    assert len(fuzzer_stats_paths) > 0, f"Found no queue dirs: {len(fuzzer_stats_paths)} -- {fuzzer_stats_paths} "
+    # # there should be the same amount of fuzzer_stats files as queue_dirs otherwise, something is wrong
+    # assert len(queue_dirs) > 0, f"Found no queue dirs: {len(queue_dirs)} -- {queue_dirs} "
+    # assert len(fuzzer_stats_paths) > 0, f"Found no queue dirs: {len(fuzzer_stats_paths)} -- {fuzzer_stats_paths} "
 
-    if len(queue_dirs) != len(fuzzer_stats_paths):
-        print(f"Found a different amount of fuzzer_stats files and queue directorys: Queues: {len(queue_dirs)} -- stats: {len(fuzzer_stats_paths)}")
-        assert len(queue_dirs) == len(fuzzer_stats_paths), "different len of queue and fuzzer_stats"
+    # if len(queue_dirs) != len(fuzzer_stats_paths):
+    #     print(f"Found a different amount of fuzzer_stats files and queue directorys: Queues: {len(queue_dirs)} -- stats: {len(fuzzer_stats_paths)}")
+    #     assert len(queue_dirs) == len(fuzzer_stats_paths), "different len of queue and fuzzer_stats"
+    fuzzer_stats_paths = []
+    if fuzzer_type == "afl":
+        fuzzer_stats_paths : list[Path] = natsorted(list(Path(full_corpus / trial).glob("**/fuzzer_stats")))
+        assert len(fuzzer_stats_paths) > 0, f"Found no queue dirs: {len(fuzzer_stats_paths)} -- {fuzzer_stats_paths} "
+        assert len(queue_dirs) > 0, f"Found no queue dirs: {len(queue_dirs)} -- {queue_dirs} "
+            
+        if len(queue_dirs) != len(fuzzer_stats_paths):
+            print(f"Found a different amount of fuzzer_stats files and queue directorys: Queues: {len(queue_dirs)} -- stats: {len(fuzzer_stats_paths)}")
+            assert len(queue_dirs) == len(fuzzer_stats_paths), "different len of queue and fuzzer_stats"
+        
+        # asume that all queues of the fuzzer have the same afl version -- so the first one will do it
+
+    elif fuzzer_type == "libafl":
+        assert len(queue_dirs) > 0, f"Found no queue dirs: {len(queue_dirs)} -- {queue_dirs} "
+    
+    else:
+        print(f"Error: unknown fuzzer type: {fuzzer_type}")
+        exit(1)
+    
+    
 
     legacy_afl : bool | None = None
 
@@ -308,19 +360,28 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
     start = 0
     for queue_dir in queue_dirs:
         testcases_to_starttime: list[tuple] = [] 
-        fuzzer_stats = find_fuzzer_stats_for_queue(queue_dir)
-        print(queue_dir)
-        print(fuzzer_stats, "\n")
+        # fuzzer_stats = find_fuzzer_stats_for_queue(queue_dir)
+        # print(queue_dir)
+        # print(fuzzer_stats, "\n")
 
-        testcases = get_testcases(queue_dir)
-        starttime  = get_starttime(fuzzer_stats)
-        afl_version = get_afl_version(fuzzer_stats)
-        if legacy_afl is None:
-            legacy_afl = check_legacy_afl(afl_version)
+        # testcases = get_testcases(queue_dir)
+        # starttime  = get_starttime(fuzzer_stats)
+        # afl_version = get_afl_version(fuzzer_stats)
+        # if legacy_afl is None:
+        #     legacy_afl = check_legacy_afl(afl_version)
             
-        print(f"queue_dir: {queue_dir}\nfuzzer_stats: {fuzzer_stats}\t starttime: {starttime}")
+        # print(f"queue_dir: {queue_dir}\nfuzzer_stats: {fuzzer_stats}\t starttime: {starttime}")
 
-        testcases_to_starttime.extend((afl_version, starttime, tc) for tc in testcases)
+        # testcases_to_starttime.extend((afl_version, starttime, tc) for tc in testcases)
+        legacy_afl = False
+        if fuzzer_type == "afl":
+            testcases_to_starttime, legacy_afl = preprocess_afl(queue_dir, testcases_to_starttime)    
+        elif fuzzer_type == "libafl":
+            testcases_to_starttime = preprocess_libafl(queue_dir, testcases_to_starttime)
+            legacy_afl = True
+        else:
+            print(f"Error: unknown fuzzer type: {fuzzer_type}")
+            exit(1)
         
         gen_profraw_data(testcases_to_starttime, start, target_bin, target_args, profraw_dir, trial, base_dir, legacy_afl)
         start += len(testcases_to_starttime)
@@ -581,7 +642,7 @@ def gen_arguments(args : Namespace) -> dict[str,Any]:
     trials : int = args.trials
     target_name : str = args.target
 
-    return {"work_dir": base_dir, "corpus_path": corpus_path, "cov_bin": cov_bin_path, "trials" : trials, "trial_idf" : args.trial_idf, "target_name": target_name, "target_args": args.target_args, "crash_bin" : crash_bin}
+    return {"work_dir": base_dir, "corpus_path": corpus_path, "cov_bin": cov_bin_path, "trials" : trials, "trial_idf" : args.trial_idf, "target_name": target_name, "target_args": args.target_args, "crash_bin" : crash_bin, "fuzzer_type" : args.fuzzer_type}
 
 def random_rgb_color():
     return tuple(np.random.rand(3,))
@@ -1138,6 +1199,7 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--trial_idf", type=str, default="", help="Identifier for trial directories e.g. trial_[0-9]*")
     parser.add_argument("--fuzzer_names", type=str, default="", help="Fuzzer names in quotes")
     parser.add_argument("--target_args", type=str, default="", help="Target arguments, use quotes")
+    parser.add_argument("--fuzzer_type", type=str, default="afl", help="Fuzzer type eg afl-based (afl) or libafl-based (libafl")
     parser.add_argument("--calc", action="store_true", default=False, help="Calculate coverage")
     parser.add_argument("--res", action="store_true", default=False, help="Print results")
     parser.add_argument("--plot", action="store_true", default=False, help="Plot results")
