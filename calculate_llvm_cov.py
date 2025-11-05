@@ -67,7 +67,8 @@ def get_testcases(corpus_path: Path, fuzzer_type : str = "afl") -> list[Path]:
         testcases = sorted(tc for tc in corpus_path.glob("id:*") if not ".state" in tc.as_posix())
     else:
 
-        testcases_unsrt = corpus_path.iterdir()
+        testcases_unsrt_all = corpus_path.iterdir()
+        testcases_unsrt = [testcase for testcase in testcases_unsrt_all if not "." in testcase.name]
         testcases = sorted(testcases_unsrt, key=get_creation_time)
             
     if other_testcase_dir is not None:
