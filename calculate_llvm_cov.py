@@ -175,7 +175,9 @@ def mount_corpus(working_args, base_dir : Path, fuzzer_name: str, umount = False
 
     for trial_id, trial_path in enumerate(trial_paths):
 
-        use_sudo = os.geteuid() != 0
+        sudo = ""
+        if os.geteuid() != 0:
+            sudo = "sudo "
         
         dest_path = Path(base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}")
         if not umount:
@@ -183,15 +185,9 @@ def mount_corpus(working_args, base_dir : Path, fuzzer_name: str, umount = False
             (base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}").mkdir(exist_ok=True)
             (base_dir / "profraw_files" / f"trial_{trial_id}").mkdir(exist_ok=True, parents=True)
             (base_dir / "profdata_files" / f"trial_{trial_id}").mkdir(exist_ok=True, parents=True)
-            cmd = ["mount", "-r", "-B", "-v", trial_path.as_posix() + "/", dest_path]
-            if use_sudo:
-                cmd.insert(0, "sudo")
-            res = subprocess.run(cmd)
+            res = subprocess.run([f"{sudo}mount", "-r", "-B", "-v", trial_path.as_posix() + "/", dest_path])
         else:
-            cmd = ["umount", "-v", dest_path]
-            if use_sudo:
-                cmd.insert(0, "sudo")
-            res = subprocess.run(cmd)
+            res = subprocess.run([f"{sudo}umount", "-v", dest_path])
 
 def extract_timestamp(file_path : Path) -> int:
     # Extract the timestamp from the file name
