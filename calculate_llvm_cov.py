@@ -30,6 +30,7 @@ from threading import Lock
 from typing import Any, Dict, List, Optional, Sequence
 import re
 import time
+import shlex
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib import rcParams
@@ -72,12 +73,19 @@ def get_testcases(corpus_path: Path, fuzzer_type : str = "afl") -> list[Path]:
         testcases = sorted(testcases_unsrt, key=get_creation_time)
             
     if other_testcase_dir is not None:
-        if (corpus_path / other_testcase_dir).exists():
-            other_testcases = sorted(list(other_testcase_dir.glob("id:*")))
-            testcases.extend(other_testcases)
-            testcases.sort()
-        else:
-            print(f"Other testcases directory not found: skipping {other_testcase_dir}")
+        other_dir = Path(other_testcase_dir)
+        if str(other_dir) != "":
+            if not other_dir.is_absolute():
+                other_dir = corpus_path / other_dir
+            if other_dir.exists():
+                other_testcases = sorted(tc for tc in other_dir.glob("id:*") if ".state" not in tc.as_posix())
+                testcases.extend(other_testcases)
+                if fuzzer_type == "afl":
+                    testcases = sorted(testcases)
+                else:
+                    testcases = sorted(testcases, key=get_creation_time)
+            else:
+                print(f"Other testcases directory not found: skipping {other_dir}")
         
     return testcases
 
@@ -165,9 +173,7 @@ def mount_corpus(working_args, base_dir : Path, fuzzer_name: str, umount = False
 
     for trial_id, trial_path in enumerate(trial_paths):
 
-        sudo = ""
-        if os.geteuid() != 0:
-            sudo = "sudo "
+        use_sudo = os.geteuid() != 0
         
         dest_path = Path(base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}")
         if not umount:
@@ -175,9 +181,15 @@ def mount_corpus(working_args, base_dir : Path, fuzzer_name: str, umount = False
             (base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}").mkdir(exist_ok=True)
             (base_dir / "profraw_files" / f"trial_{trial_id}").mkdir(exist_ok=True, parents=True)
             (base_dir / "profdata_files" / f"trial_{trial_id}").mkdir(exist_ok=True, parents=True)
-            res = subprocess.run([f"{sudo}mount", "-r", "-B", "-v", trial_path.as_posix() + "/", dest_path])
+            cmd = ["mount", "-r", "-B", "-v", trial_path.as_posix() + "/", dest_path]
+            if use_sudo:
+                cmd.insert(0, "sudo")
+            res = subprocess.run(cmd)
         else:
-            res = subprocess.run([f"{sudo}umount", "-v", dest_path])
+            cmd = ["umount", "-v", dest_path]
+            if use_sudo:
+                cmd.insert(0, "sudo")
+            res = subprocess.run(cmd)
 
 def extract_timestamp(file_path : Path) -> int:
     # Extract the timestamp from the file name
@@ -238,10 +250,12 @@ def gen_profraw_data(testcases_to_starttime: list[tuple], start, target_bin: Pat
     for i, testcase_to_starttime in enumerate(testcases_to_starttime, start=start):
         afl_version, starttime, testcase = testcase_to_starttime
         
-        if i % int(tts_len * 0.2) == 0:
+        progress_mod = max(1, int(tts_len * 0.2))
+        merge_mod = max(1, int(tts_len * 0.3))
+        if i % progress_mod == 0:
             print(f"[{jobs_done[0]}/{all_jobs_len}] Processing Testcase {trial} - {base_dir.name}:\t {i}/{start+len(testcases_to_starttime)} -- {round(i / (start+len(testcases_to_starttime))*100,2)}%")
             
-        if i % int(tts_len * 0.3) == 0 and i > 0 or i == len(testcases_to_starttime) - 1:
+        if (i % merge_mod == 0 and i > 0) or i == len(testcases_to_starttime) - 1:
             profraw_files : list[Path] = sorted(list(profraw_dir.iterdir()))
             file_groups = group_files_by_minute(profraw_files)
 
@@ -275,13 +289,10 @@ def gen_profraw_data(testcases_to_starttime: list[tuple], start, target_bin: Pat
         
         os.environ["LLVM_PROFILE_FILE"] = profraw_file
 
-        target_args_w_input = target_args
-
-        while "@@" in target_args_w_input:
-            target_args_w_input = target_args_w_input.replace("@@", str(testcase))
-        #llvm_target_cmd = f"{target_bin} {target_args} {testcase}"
-        llvm_target_cmd = f"{target_bin} {target_args_w_input}"
-        execute_cmd(llvm_target_cmd.split(" "))
+        args_list = shlex.split(target_args)
+        target_args_w_input = [arg.replace("@@", str(testcase)) for arg in args_list]
+        llvm_target_cmd = [str(target_bin), *target_args_w_input]
+        execute_cmd(llvm_target_cmd)
     print(f"\nGenerating profraw files done ({trial} - {base_dir.name})!")
     
     
@@ -299,6 +310,9 @@ def preprocess_afl(queue_dir : Path, testcases_to_starttime : list[tuple]) -> tu
 def preprocess_libafl(queue_dir : Path, testcases_to_starttime : list[tuple]) -> list[tuple]:
     print(f"Preprocessing libafl testcases in {queue_dir}")
     testcases: list[Path] = get_testcases(queue_dir, fuzzer_type = "libafl")
+    if len(testcases) == 0:
+        print(f"No testcases found in {queue_dir}")
+        return testcases_to_starttime
     # for libafl we don't have a starttime yet, so we set it to 0
     starttime: str = int(get_creation_time(testcases[0])).__str__()
     afl_version: str = "libafl"
@@ -479,9 +493,10 @@ def merge_by_minute_single(files : list[Path], minute, trial):
     profdata_dir = files[0].parent.parent.parent / "profdata_files" / trial
     # temporary save files
     fd, profdata_save_file = tempfile.mkstemp(dir=profdata_dir, prefix="llvm_tmp_", suffix=".txt")
-    with open(profdata_save_file, "w") as fd:
+    os.close(fd)
+    with open(profdata_save_file, "w") as fd_out:
         for profraw_file in files:
-            fd.write(f"{profraw_file}\n")
+            fd_out.write(f"{profraw_file}\n")
 
     new_profdata_file: str = f"{profdata_dir}/llvm_ts:{timestamp}.profdata"
     llvm_profdata_cmd: str = f"llvm-profdata-{llvm_version} merge -sparse -f {profdata_save_file} -o {new_profdata_file}"
@@ -539,10 +554,16 @@ def get_crashes(base_dir : Path, result_crash_dir : Path):
             continue
 
         print(f"{len(hashed_crashes)} crashes found!")
-        crash_fs_path : Path = list(crash.parent.parent.glob("./**/fuzzer_stats"))[0]
+        crash_stats = list(crash.parent.parent.glob("./**/fuzzer_stats"))
+        if not crash_stats:
+            print(f"No fuzzer_stats found for crash: {crash}")
+            continue
+        crash_fs_path : Path = crash_stats[0]
         print(f"found fuzzer_stats for crash: {crash_fs_path}")
-        cov_times = []
         starttime = get_starttime(crash_fs_path)
+        if ",time:" not in crash.name:
+            print(f"No crash timestamp found in name: {crash.name}")
+            continue
         crash_timestamp = crash.name.split(",time:")[1].split(",")[0]
         ts_to_crash.append((int(starttime) + int(crash_timestamp) // 1000,crash))
         
@@ -867,6 +888,9 @@ def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, f
     if not Path(plot_dir / "incremental").exists():
         Path(plot_dir / "incremental").mkdir()
     fuzzer_to_cov: Dict[str, Dict] = calc_plot_data(fuzzer_names, fuzzer_colors, base_dir) # type: ignore
+    if len(fuzzer_to_cov) == 0:
+        print("No coverage data found to plot.")
+        return
     fig1, ax1 = plt.subplots(figsize=(6,5))
     ax1 = plot_cov_line(ax1, fuzzer_to_cov, plot_crashes, while_calc=while_calc,annotation_file=annotation_file)
     ax1.set_xlabel("Time (hours)", fontsize=10)
@@ -1108,13 +1132,11 @@ def process_crashes(base_dir : Path, working_args : Dict[str, Any]) -> None:
     for i, crash in enumerate(crashes):
         if crash.is_dir():
             continue
-        target_args_w_input = target_args
-
-        while "@@" in target_args_w_input:
-            target_args_w_input = target_args_w_input.replace("@@", str(crash))
-        test_crash_cmd = f"{crashing_binary} {target_args_w_input}"
+        args_list = shlex.split(target_args)
+        target_args_w_input = [arg.replace("@@", str(crash)) for arg in args_list]
+        test_crash_cmd = [str(crashing_binary), *target_args_w_input]
         print(f"Crash cmd:\n\t{test_crash_cmd}")
-        res = execute_cmd(test_crash_cmd.split(" "), capture_output = True)
+        res = execute_cmd(test_crash_cmd, capture_output = True)
         crash_report_file : Path = crash_report_dir / f"crash_{i:03d}_{crash.name}.txt"
         with open(crash_report_file.as_posix(), "w") as fd:
             fd.write(res.stderr.decode("utf-8"))
