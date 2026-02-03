@@ -61,7 +61,7 @@ other_testcase_dir = None
 def get_creation_time(item):
     return item.stat().st_ctime
 
-def get_testcases(corpus_path: Path, fuzzer_type : str = "afl") -> list[Path]:
+def get_testcases(corpus_path: Path, fuzzer_type : str = "afl", other_base_dir: Optional[Path] = None, include_other: bool = True) -> list[Path]:
     print(f"Gathering testcases from {corpus_path.as_posix()}")
     # filter out .state directories (redundant_edges ...)
     
@@ -73,11 +73,12 @@ def get_testcases(corpus_path: Path, fuzzer_type : str = "afl") -> list[Path]:
         testcases_unsrt = [testcase for testcase in testcases_unsrt_all if not "." in testcase.name]
         testcases = sorted(testcases_unsrt, key=get_creation_time)
             
-    if other_testcase_dir is not None:
+    if include_other and other_testcase_dir is not None:
         other_dir = Path(other_testcase_dir)
         if str(other_dir) != "":
             if not other_dir.is_absolute():
-                other_dir = corpus_path / other_dir
+                base_dir = other_base_dir if other_base_dir is not None else corpus_path
+                other_dir = base_dir / other_dir
             if other_dir.exists():
                 other_testcases = sorted(tc for tc in other_dir.glob("id:*") if ".state" not in tc.as_posix())
                 testcases.extend(other_testcases)
@@ -297,10 +298,10 @@ def gen_profraw_data(testcases_to_starttime: list[tuple], start, target_bin: Pat
     print(f"\nGenerating profraw files done ({trial} - {base_dir.name})!")
     
     
-def preprocess_afl(queue_dir : Path, testcases_to_starttime : list[tuple]) -> tuple[list[tuple], bool]:
+def preprocess_afl(queue_dir : Path, testcases_to_starttime : list[tuple], trial_root: Optional[Path]) -> tuple[list[tuple], bool]:
     print(f"Preprocessing afl testcases in {queue_dir}")
     fuzzer_stats = find_fuzzer_stats_for_queue(queue_dir)
-    testcases: list[Path] = get_testcases(queue_dir)
+    testcases: list[Path] = get_testcases(queue_dir, other_base_dir=trial_root)
     starttime: str = get_starttime(fuzzer_stats)
     afl_version: str = get_afl_version(fuzzer_stats)
     legacy_afl = check_legacy_afl(afl_version)
@@ -308,9 +309,9 @@ def preprocess_afl(queue_dir : Path, testcases_to_starttime : list[tuple]) -> tu
     testcases_to_starttime.extend(list(zip([afl_version] * len(testcases), [starttime] * len(testcases), testcases)))
     return testcases_to_starttime, legacy_afl
 
-def preprocess_libafl(queue_dir : Path, testcases_to_starttime : list[tuple]) -> list[tuple]:
+def preprocess_libafl(queue_dir : Path, testcases_to_starttime : list[tuple], trial_root: Optional[Path]) -> list[tuple]:
     print(f"Preprocessing libafl testcases in {queue_dir}")
-    testcases: list[Path] = get_testcases(queue_dir, fuzzer_type = "libafl")
+    testcases: list[Path] = get_testcases(queue_dir, fuzzer_type = "libafl", other_base_dir=trial_root)
     if len(testcases) == 0:
         print(f"No testcases found in {queue_dir}")
         return testcases_to_starttime
@@ -391,9 +392,9 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
         # testcases_to_starttime.extend((afl_version, starttime, tc) for tc in testcases)
         legacy_afl = False
         if fuzzer_type == "afl":
-            testcases_to_starttime, legacy_afl = preprocess_afl(queue_dir, testcases_to_starttime)    
+            testcases_to_starttime, legacy_afl = preprocess_afl(queue_dir, testcases_to_starttime, full_corpus / trial)    
         elif fuzzer_type == "libafl":
-            testcases_to_starttime = preprocess_libafl(queue_dir, testcases_to_starttime)
+            testcases_to_starttime = preprocess_libafl(queue_dir, testcases_to_starttime, full_corpus / trial)
             legacy_afl = True
         else:
             print(f"Error: unknown fuzzer type: {fuzzer_type}")
@@ -538,7 +539,7 @@ def get_crashes(base_dir : Path, result_crash_dir : Path):
     print(f"Number of crash dirs: {len(crash_dirs)}")
 
     for crash_dir in crash_dirs:
-        crashes.extend(get_testcases(crash_dir))
+        crashes.extend(get_testcases(crash_dir, include_other=False))
     print(f"found crashes: {len(crashes)}")
 
     hashes : list[str] = []
