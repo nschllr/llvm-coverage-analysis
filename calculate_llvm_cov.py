@@ -80,7 +80,9 @@ def get_testcases(corpus_path: Path, fuzzer_type : str = "afl", other_base_dir: 
                 base_dir = other_base_dir if other_base_dir is not None else corpus_path
                 other_dir = base_dir / other_dir
             if other_dir.exists():
-                other_testcases = sorted(tc for tc in other_dir.glob("id:*") if ".state" not in tc.as_posix())
+                print(f"Found other testcases directory: {other_dir}")
+                other_testcases = sorted(tc for tc in other_dir.glob("**/id:*") if ".state" not in tc.as_posix())
+                print(f"Adding {len(other_testcases)} testcases from other directory")
                 testcases.extend(other_testcases)
                 if fuzzer_type == "afl":
                     testcases = sorted(testcases)
