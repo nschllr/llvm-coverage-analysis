@@ -176,9 +176,6 @@ def mount_corpus(working_args, base_dir : Path, fuzzer_name: str, umount = False
     for trial_id, trial_path in enumerate(trial_paths):
 
         use_sudo = os.geteuid() != 0
-        if use_sudo and shutil.which("sudo") is None:
-            print("Warning: sudo not found; attempting mount without sudo.")
-            use_sudo = False
         
         dest_path = Path(base_dir / "tmp" / "full_corpus" / f"trial_{trial_id}")
         if not umount:
@@ -190,18 +187,11 @@ def mount_corpus(working_args, base_dir : Path, fuzzer_name: str, umount = False
             if use_sudo:
                 cmd.insert(0, "sudo")
             res = subprocess.run(cmd)
-            if res.returncode != 0:
-                print(f"Warning: bind-mount failed for {trial_path}; falling back to copy.")
-                try:
-                    shutil.copytree(trial_path, dest_path, dirs_exist_ok=True)
-                except Exception as e:
-                    print(f"Error: copy fallback failed for {trial_path}: {e}")
         else:
-            if os.path.ismount(dest_path):
-                cmd = ["umount", "-v", dest_path]
-                if use_sudo:
-                    cmd.insert(0, "sudo")
-                res = subprocess.run(cmd)
+            cmd = ["umount", "-v", dest_path]
+            if use_sudo:
+                cmd.insert(0, "sudo")
+            res = subprocess.run(cmd)
 
 def extract_timestamp(file_path : Path) -> int:
     # Extract the timestamp from the file name
