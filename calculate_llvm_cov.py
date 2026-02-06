@@ -8,10 +8,7 @@
 # directory structure:
 # AFL++:
 #   afl_out/afl_TRIAL_NUM/default/queue
-#
-# Sileo:
-#   afl_out/sileo_TRIAL_NUM/%SILEO_MODE%/%TARGET%/worker_0/run_NUM/{default/queue, default/fuzzer_stats}
-#
+
 
 import traceback
 import sys
@@ -56,6 +53,7 @@ all_jobs_len = 0
 accuracy = 0.0
 jobs_done = [0]
 other_testcase_dir = None
+max_runtime_seconds = 0.0
 
 
 def get_creation_time(item):
@@ -66,26 +64,42 @@ def get_testcases(corpus_path: Path, fuzzer_type : str = "afl", other_base_dir: 
     # filter out .state directories (redundant_edges ...)
     
     if fuzzer_type == "afl":
-        testcases = sorted(tc for tc in corpus_path.glob("id:*") if not ".state" in tc.as_posix())
+        def afl_sort_key(tc: Path) -> tuple[int, str]:
+            if ",time:" in tc.name:
+                t = tc.name.split(",time:")[1].split(",")[0]
+                if "+" in t:
+                    t = t.split("+")[0]
+                try:
+                    return (int(t), tc.as_posix())
+                except ValueError:
+                    pass
+            return (int(tc.stat().st_mtime), tc.as_posix())
+        testcases = sorted(
+            (tc for tc in corpus_path.glob("id:*") if tc.is_file() and ".state" not in tc.as_posix()),
+            key=afl_sort_key,
+        )
     else:
 
         testcases_unsrt_all = corpus_path.iterdir()
-        testcases_unsrt = [testcase for testcase in testcases_unsrt_all if not "." in testcase.name]
+        testcases_unsrt = [testcase for testcase in testcases_unsrt_all if testcase.is_file() and not "." in testcase.name]
         testcases = sorted(testcases_unsrt, key=get_creation_time)
             
-    if include_other and other_testcase_dir is not None:
+    if include_other and other_testcase_dir:
         other_dir = Path(other_testcase_dir)
-        if str(other_dir) != "":
+        if str(other_dir) not in ("", "."):
             if not other_dir.is_absolute():
                 base_dir = other_base_dir if other_base_dir is not None else corpus_path
                 other_dir = base_dir / other_dir
             if other_dir.exists():
                 print(f"Found other testcases directory: {other_dir}")
-                other_testcases = sorted(tc for tc in other_dir.glob("**/id:*") if ".state" not in tc.as_posix())
+                other_testcases = sorted(
+                    (tc for tc in other_dir.glob("id:*") if ".state" not in tc.as_posix()),
+                    key=get_creation_time,
+                )
                 print(f"Adding {len(other_testcases)} testcases from other directory")
                 testcases.extend(other_testcases)
                 if fuzzer_type == "afl":
-                    testcases = sorted(testcases)
+                    testcases = sorted(testcases, key=afl_sort_key)
                 else:
                     testcases = sorted(testcases, key=get_creation_time)
             else:
@@ -149,7 +163,17 @@ def check_legacy_afl(afl_version : str) -> bool:
 
 
 def get_testcase_cov_time(testcase : Path, starttime : str, afl_version : str) -> int:
-    return 0
+    # Use filename time when available; otherwise fall back to mtime.
+    if ",time:" not in testcase.name:
+        return int(testcase.stat().st_mtime)
+    testcase_time = testcase.name.split(",time:")[1].split(",")[0]
+    if "+" in testcase_time:
+        testcase_time = testcase_time.split("+")[0]
+    try:
+        testcase_time_int = int(testcase_time)
+    except ValueError:
+        return int(testcase.stat().st_mtime)
+    return int(starttime) + testcase_time_int // 1000
 
 
 def get_all_fuzzer(working_args, cstrip = ""):
@@ -253,6 +277,8 @@ def gen_profraw_data(testcases_to_starttime: list[tuple], start, target_bin: Pat
     print(f"Generating profraw data from testcases... ({trial} - {base_dir.name})")
     cov_times = []
     tts_len = len(testcases_to_starttime)
+    staging_dir = profraw_dir / "staging"
+    staging_dir.mkdir(exist_ok=True)
 
     for i, testcase_to_starttime in enumerate(testcases_to_starttime, start=start):
         afl_version, starttime, testcase = testcase_to_starttime
@@ -263,33 +289,30 @@ def gen_profraw_data(testcases_to_starttime: list[tuple], start, target_bin: Pat
             print(f"[{jobs_done[0]}/{all_jobs_len}] Processing Testcase {trial} - {base_dir.name}:\t {i}/{start+len(testcases_to_starttime)} -- {round(i / (start+len(testcases_to_starttime))*100,2)}%")
             
         if (i % merge_mod == 0 and i > 0) or i == len(testcases_to_starttime) - 1:
-            profraw_files : list[Path] = sorted(list(profraw_dir.iterdir()))
-            file_groups = group_files_by_minute(profraw_files)
+            profraw_files : list[Path] = sorted(list(profraw_dir.glob("*.profraw")))
+            for profraw_file in profraw_files:
+                profraw_file.replace(staging_dir / profraw_file.name)
+            staged_files: list[Path] = sorted(list(staging_dir.glob("*.profraw")))
+            file_groups = group_files_by_minute(staged_files)
 
             print("Start multiprocessed merging by minute")
             with concurrent.futures.ProcessPoolExecutor() as executor:
                 futures = []
                 for minute, files in file_groups.items():
                     #merge_by_minute_single(files, minute, trial)
-                    futures.append(executor.submit(merge_by_minute_single, files, minute, trial))
+                    futures.append(executor.submit(merge_by_minute_single, files, minute, trial, profraw_dir.parent.parent / "profdata_files" / trial))
                 concurrent.futures.wait(futures)
 
         cov_time: int = 0
 
         if legacy_or_libafl:
-            testcase_time = get_creation_time(testcase)
-            cov_time = testcase_time
+            cov_time = int(testcase.stat().st_mtime)
         else:
-            # some afl++ version did not assign a time to "orig:" testcases
-            if ",time:" not in testcase.name:
-                testcase_time = 0
-            else:
-                testcase_time = testcase.name.split(",time:")[1].split(",")[0]
-                # some afl++ versions have a "+" in the timestamp for splicing
-                if "+" in testcase_time:
-                    testcase_time = testcase_time.split("+")[0] 
-            cov_time = int(starttime) + int(testcase_time) // 1000
+            cov_time = get_testcase_cov_time(testcase, starttime, afl_version)
             #print(f"testcase: {testcase} \t testcase_time: {testcase_time} \t starttime: {starttime} \t cov_time: {cov_time}")
+        if max_runtime_seconds > 0 and starttime != "":
+            if cov_time - int(starttime) > max_runtime_seconds:
+                continue
         cov_times.append(cov_time)
         profraw_file = f"{profraw_dir}/llvm_{i:08d}_ts:{cov_time}.profraw"
         assert Path(profraw_file).exists() == False, f"profraw file already exists: {profraw_file}"
@@ -493,11 +516,9 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
 
     return True, base_dir
 
-def merge_by_minute_single(files : list[Path], minute, trial):
+def merge_by_minute_single(files : list[Path], minute, trial, profdata_dir: Path):
     timestamp = int(datetime.strptime(minute, '%Y-%m-%d %H:%M').timestamp())
     print(f"Merging data for timestamp ({trial}): {minute} --- \t{len(files)} files")
-
-    profdata_dir = files[0].parent.parent.parent / "profdata_files" / trial
     # temporary save files
     fd, profdata_save_file = tempfile.mkstemp(dir=profdata_dir, prefix="llvm_tmp_", suffix=".txt")
     os.close(fd)
@@ -505,8 +526,11 @@ def merge_by_minute_single(files : list[Path], minute, trial):
         for profraw_file in files:
             fd_out.write(f"{profraw_file}\n")
 
-    new_profdata_file: str = f"{profdata_dir}/llvm_ts:{timestamp}.profdata"
-    llvm_profdata_cmd: str = f"llvm-profdata-{llvm_version} merge -sparse -f {profdata_save_file} -o {new_profdata_file}"
+    new_profdata_file: Path = profdata_dir / f"llvm_ts:{timestamp}.profdata"
+    if new_profdata_file.exists():
+        llvm_profdata_cmd: str = f"llvm-profdata-{llvm_version} merge -sparse {new_profdata_file} -f {profdata_save_file} -o {new_profdata_file}"
+    else:
+        llvm_profdata_cmd = f"llvm-profdata-{llvm_version} merge -sparse -f {profdata_save_file} -o {new_profdata_file}"
     execute_cmd(llvm_profdata_cmd.split(" "), check=True)
 
     # deleting old files
@@ -1246,9 +1270,10 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--pformat", type=str, default="pdf", help="Save plots as FORMAT")
     parser.add_argument("--crash_binary", type=Path, help="Path to binary to test crashes (e.g. compiled with ASAN)")
     parser.add_argument("--accuracy", type=float, default=0.5, help="Accuracy of the line coverage plot [0.0-1.0] (0: fastest / no useful line plot, 1: most accurate line plot)")
+    parser.add_argument("--max_runtime_hours", type=float, default=0.0, help="Limit processing to the first N hours of a run (0 = no limit)")
     parser.add_argument("--plot_desc", type=str, default="", help="Description for the plot")
     parser.add_argument("--color_file", type=Path, default=None, help="Path to a file containing fuzzer names and colors")
-    parser.add_argument("--other_testcases", type=Path, default="", help="Other testcase dir (absolute path or relative to queue dir), e.g. '.state/XXXX'")
+    parser.add_argument("--other_testcases", type=Path, default=None, help="Other testcase dir (absolute path or relative to queue dir), e.g. 'default/queue/.state/XXXX'")
     parser.add_argument("--annotation-file", type=Path, default=None, help="Annotation file for plotting, e.g. to add identifiers to the plot (median run)")
 
     if raw_args is None and len(sys.argv) == 1:
@@ -1258,7 +1283,7 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
 
 
 def main(raw_args: Optional[Sequence[str]] = None):
-    global skip_corpus, show_bands, regex, num_trials, llvm_version, all_jobs_len, accuracy, other_testcase_dir
+    global skip_corpus, show_bands, regex, num_trials, llvm_version, all_jobs_len, accuracy, other_testcase_dir, max_runtime_seconds
     
     args: Namespace = parse_arguments(raw_args)
     working_args: dict = gen_arguments(args)
@@ -1273,6 +1298,10 @@ def main(raw_args: Optional[Sequence[str]] = None):
         print("Accuracy must be between 0 and 1.0")
         exit()
     accuracy = args.accuracy
+    if args.max_runtime_hours < 0.0:
+        print("max_runtime_hours must be >= 0")
+        exit()
+    max_runtime_seconds = args.max_runtime_hours * 3600.0
     
     # check which version of llvm is installed
     llvm_version = subprocess.run(["llvm-config", "--version"], capture_output=True).stdout.decode("utf-8").split(".")[0]
