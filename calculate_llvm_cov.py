@@ -556,58 +556,6 @@ def execute_cmd(cmd : List[str], capture_output=True, check = False):
 def get_branches_covered(json_data) -> int:
     return int(json_data["data"][0]["totals"]["branches"]["covered"])
 
-def get_crashes(base_dir : Path, result_crash_dir : Path):
-    print("     Get crashes...")
-    full_corpus : Path = base_dir / "tmp" / "full_corpus"
-    print(full_corpus)
-    crash_dirs : list = list(full_corpus.glob("**/crashes/"))
-    crashes : list[Path] = []
-
-    result_crash_dir.mkdir(exist_ok=True, parents=True)
-    
-    print(f"Number of crash dirs: {len(crash_dirs)}")
-
-    for crash_dir in crash_dirs:
-        crashes.extend(get_testcases(crash_dir, include_other=False))
-    print(f"found crashes: {len(crashes)}")
-
-    hashes : list[str] = []
-    hashed_crashes : list[Path] = []
-    ts_to_crash : list[tuple] = []
-
-    for crash in crashes:
-        crash_hash = get_hash(crash)
-
-        if crash_hash not in hashes:
-            hashed_crashes.append(crash)
-            hashes.append(crash_hash)
-        else:
-            continue
-
-        print(f"{len(hashed_crashes)} crashes found!")
-        crash_stats = list(crash.parent.parent.glob("./**/fuzzer_stats"))
-        if not crash_stats:
-            print(f"No fuzzer_stats found for crash: {crash}")
-            continue
-        crash_fs_path : Path = crash_stats[0]
-        print(f"found fuzzer_stats for crash: {crash_fs_path}")
-        starttime = get_starttime(crash_fs_path)
-        if ",time:" not in crash.name:
-            print(f"No crash timestamp found in name: {crash.name}")
-            continue
-        crash_timestamp = crash.name.split(",time:")[1].split(",")[0]
-        ts_to_crash.append((int(starttime) + int(crash_timestamp) // 1000,crash))
-        
-        print(f"Copying crash: {crash}")
-        shutil.copy(crash, result_crash_dir)
-
-    return ts_to_crash
-
-
-def get_hash(file: Path) -> str:
-    with open(file, "rb") as f:
-        return hashlib.md5(f.read()).hexdigest()
-
 def get_results(base_dir):
     import statistics
 
@@ -687,15 +635,10 @@ def gen_arguments(args : Namespace) -> dict[str,Any]:
             print("Coverage binary does not exist!")
             exit()
             
-    if args.crash_binary is not None and args.crash_binary.exists():
-        crash_bin : Path = args.crash_binary
-    else:
-        crash_bin = None        
-        
     trials : int = args.trials
     target_name : str = args.target
 
-    return {"work_dir": base_dir, "corpus_path": corpus_path, "cov_bin": cov_bin_path, "trials" : trials, "trial_idf" : args.trial_idf, "target_name": target_name, "target_args": args.target_args, "crash_bin" : crash_bin, "fuzzer_type" : args.fuzzer_type}
+    return {"work_dir": base_dir, "corpus_path": corpus_path, "cov_bin": cov_bin_path, "trials" : trials, "trial_idf" : args.trial_idf, "target_name": target_name, "target_args": args.target_args, "fuzzer_type" : args.fuzzer_type}
 
 def random_rgb_color():
     return tuple(np.random.rand(3,))
@@ -776,24 +719,8 @@ def calc_plot_data(fuzzer_names : set[str] = set(), fuzzer_colors : dict = {}, b
         # all trial paths of fuzzer with name...
         # coverage_analysis_old/afl/profdata_files/trial_0/timestamp_to_b_covered.txt
         all_trial_paths = sorted(list(base_dir.glob(f"{fuzzer_name}/results/*/timestamp_to_b_covered.txt")))
-        ts_to_crash_file: Path = base_dir / fuzzer_name / "results/timestamp_to_crash.txt"
-
-        ts_to_crashes = []
-        if ts_to_crash_file.exists():
-            with open(ts_to_crash_file.as_posix(),"r") as fd:
-                ts_to_crashes: list[str] = fd.readlines()
-
-        ts_crash_list: list[int] = []
-
-        for ts_to_crash in ts_to_crashes:
-            ts =  ts_to_crash.split(",")[0] 
-            #ts_to_crash_dict.update({ts : crash})
-            ts_crash_list.append(int(ts))
-
         trial_results_branches: list[list] = []
         trial_results_ts: list[list] = []
-
-        ts_relative_crash_list = []
         trial_to_branches = []
         
         for ts_to_branch_file in all_trial_paths:
@@ -818,11 +745,6 @@ def calc_plot_data(fuzzer_names : set[str] = set(), fuzzer_colors : dict = {}, b
                 ts_next = int(ts_next)
                 
                 while True:
-                    if ts in ts_crash_list:
-                        #print(f"found {ts} in {ts_crash_list}")
-                        ts_relative_crash_list.append(ts_relative)
-                        ts_crash_list.remove(ts)
-                        
                     if ts + 1 < ts_next:
                         branches_covered_list.append(int(branches_covered))
                         ts_list.append(ts_relative)
@@ -899,11 +821,11 @@ def calc_plot_data(fuzzer_names : set[str] = set(), fuzzer_colors : dict = {}, b
         lower = list(np.insert(lower,0,0))
         max_time = len(upper)
 
-        fuzzer_to_cov.update({fuzzer_name:{"color": fuzzer_color, "median":median,"upper": upper, "lower":lower, "max_time": max_time, "crashes":ts_relative_crash_list,}})
+        fuzzer_to_cov.update({fuzzer_name:{"color": fuzzer_color, "median":median,"upper": upper, "lower":lower, "max_time": max_time}})
     return fuzzer_to_cov
 
 
-def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), plot_crashes : bool = False, save_format = "png", plot_desciption = "", annotation_file = None) -> None:
+def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, fuzzer_colors : dict = {}, base_dir = Path("coverage_analysis"), save_format = "png", plot_desciption = "", annotation_file = None) -> None:
 
     rcParams.update({'figure.autolayout': True})
     plot_dir = base_dir.parent / "plots"
@@ -923,7 +845,7 @@ def plotting(fuzzer_names : set[str] = set(), while_calc = False, img_cnt = 0, f
         print("No coverage data found to plot.")
         return
     fig1, ax1 = plt.subplots(figsize=(6,5))
-    ax1 = plot_cov_line(ax1, fuzzer_to_cov, plot_crashes, while_calc=while_calc,annotation_file=annotation_file)
+    ax1 = plot_cov_line(ax1, fuzzer_to_cov, while_calc=while_calc,annotation_file=annotation_file)
     ax1.set_xlabel("Time (hours)", fontsize=10)
     ax1.set_ylabel("Branches Covered",fontsize=10)
     ax1.set_ylim(ymin=0)
@@ -963,10 +885,10 @@ import matplotlib.pyplot as plt
 
 SEC_TO_HOURS = 1.0 / 3600.0
 
-def plot_cov_line(ax, fuzzer_to_cov: Dict[str, Dict], plot_crashes, while_calc: bool = False, annotation_file = None):  # type: ignore
+def plot_cov_line(ax, fuzzer_to_cov: Dict[str, Dict], while_calc: bool = False, annotation_file = None):  # type: ignore
     # fuzzer_to_cov : {fuzzer_name:{
     #   "color": fuzzer_color, "median":median,"upper": upper, "lower":lower,
-    #   "max_time": max_time, "crashes": ts_relative_crash_list,
+    #   "max_time": max_time,
     # }}
 
     # fill each fuzzer line to the maximum
@@ -982,7 +904,6 @@ def plot_cov_line(ax, fuzzer_to_cov: Dict[str, Dict], plot_crashes, while_calc: 
         upper:  list[int] = fuzzer_data["upper"]
         lower:  list[int] = fuzzer_data["lower"]
         max_time: int  = fuzzer_data["max_time"]      # seconds
-        ts_relative_crash_list: list = fuzzer_data["crashes"]  # seconds
 
         last_med   = median[-1]
         last_upper = upper[-1]
@@ -1016,20 +937,6 @@ def plot_cov_line(ax, fuzzer_to_cov: Dict[str, Dict], plot_crashes, while_calc: 
             alpha=0.65,
             label=f"Median-{fuzzer_name}"
         )
-
-        if plot_crashes:
-            med_arr = median[:max_time_to_fill]
-            for crash_time in ts_relative_crash_list:
-                ct = int(crash_time)
-                if 0 <= ct < len(med_arr):
-                    ax.annotate(
-                        '$\U00002629$',
-                        (ct * SEC_TO_HOURS, med_arr[ct]),
-                        color=fuzzer_color,
-                        textcoords="offset points",
-                        xytext=(0, -2),
-                        ha='center'
-                    )
 
     # Vertical annotations (timestamps in seconds) -> convert to hours
     if annotation_file != None:
@@ -1088,7 +995,7 @@ def gif_up():
     else:
         print("no path plots/incremental does not exist")
 
-def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str] = set(), plot_crashes : bool = False, base_dir = Path("coverage_analysis")) -> None:
+def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str] = set(), base_dir = Path("coverage_analysis")) -> None:
 
     cnt = 0
     fuzzer_colors = {}
@@ -1120,7 +1027,7 @@ def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str]
     while not stop_event.is_set():
         try:
             print("plotting...")
-            plotting(fuzzer_names, while_calc = True, img_cnt = cnt, fuzzer_colors=fuzzer_colors, base_dir=base_dir, plot_crashes=plot_crashes)
+            plotting(fuzzer_names, while_calc = True, img_cnt = cnt, fuzzer_colors=fuzzer_colors, base_dir=base_dir)
         except Exception as e:
             tb = traceback.format_exc()
             print("Something went wrong!")
@@ -1130,49 +1037,6 @@ def interval_plot_thread(stop_event, interval : int = 0, fuzzer_names : set[str]
         cnt += 1
         time.sleep(interval)
     print("Plotting Stopped!")
-
-def process_crashes(base_dir : Path, working_args : Dict[str, Any]) -> None:
-    
-    crashing_binary : Path = working_args["crash_bin"]
-    target_args : str = working_args["target_args"]
-    
-    if crashing_binary == None or not crashing_binary.exists():
-        print("Please specify path of the binary to test the crashes with (e.g. compiled with ASAN)")
-        exit()
-    
-    print("Processing crashes...")
-    print(f"Using binary: {crashing_binary}")
-    crash_res_file = Path(base_dir / "results" / "timestamp_to_crash.txt")
-    res_crash_dir : Path = crash_res_file.parent / "crashes"
-    crash_report_dir : Path = res_crash_dir / "reports"
-    ts_to_crash : list[tuple]  = get_crashes(base_dir, res_crash_dir)
-    
-    result_dir : Path = base_dir / "results"
-    result_dir.mkdir(exist_ok=True)
-    if not crash_res_file.exists():     
-        print("Saving crashes")
-        with open(crash_res_file,"w") as fd:
-            for ts, crash in ts_to_crash:
-                fd.write(f"{ts},{crash}\n")
-    else:
-        print("crash results already exists!")
-        
-    crashes : list[Path] = res_crash_dir.iterdir()
-    crash_report_dir.mkdir(exist_ok=True)
-    
-    for i, crash in enumerate(crashes):
-        if crash.is_dir():
-            continue
-        args_list = shlex.split(target_args)
-        target_args_w_input = [arg.replace("@@", str(crash)) for arg in args_list]
-        test_crash_cmd = [str(crashing_binary), *target_args_w_input]
-        print(f"Crash cmd:\n\t{test_crash_cmd}")
-        res = execute_cmd(test_crash_cmd, capture_output = True)
-        crash_report_file : Path = crash_report_dir / f"crash_{i:03d}_{crash.name}.txt"
-        with open(crash_report_file.as_posix(), "w") as fd:
-            fd.write(res.stderr.decode("utf-8"))
-        print(f"Generated crash report:\n\t{crash_report_file}")
-        
 
 def process_trial(trial : int, working_args : Dict[str, Any], base_dir : Path):
     print(f"Processing trial: {trial} on base dir:{base_dir}")
@@ -1265,10 +1129,8 @@ def parse_arguments(raw_args: Optional[Sequence[str]]) -> Namespace:
     parser.add_argument("--strip", type=str, default="", help="Strip the resulting fuzzer names by given character")
     parser.add_argument("--threads", type=int, default=80, help="Maximum number of threads")
     parser.add_argument("--parallel_trials", type=int, default=20, help="Maximum number of parallel trials / runs to calculate (to reduce disk usage)")
-    parser.add_argument("--crashes", action="store_true", default=False, help="Get crashes")
     parser.add_argument("--regcheck", action="store_true", default=False, help="List found fuzzers by your given regex")
     parser.add_argument("--pformat", type=str, default="pdf", help="Save plots as FORMAT")
-    parser.add_argument("--crash_binary", type=Path, help="Path to binary to test crashes (e.g. compiled with ASAN)")
     parser.add_argument("--accuracy", type=float, default=0.5, help="Accuracy of the line coverage plot [0.0-1.0] (0: fastest / no useful line plot, 1: most accurate line plot)")
     parser.add_argument("--max_runtime_hours", type=float, default=0.0, help="Limit processing to the first N hours of a run (0 = no limit)")
     parser.add_argument("--plot_desc", type=str, default="", help="Description for the plot")
@@ -1325,12 +1187,8 @@ def main(raw_args: Optional[Sequence[str]] = None):
         exit()
     
     all_jobs = []
-    if args.crashes or args.calc:
+    if args.calc:
         all_jobs = init(fuzzer_names, working_args)
-        
-    if args.crashes:
-        for fuzzer_name in fuzzer_names:
-            process_crashes(Path("coverage_analysis")  / fuzzer_name, working_args)
 
     if args.calc:
         print(f"All jobs: {len(all_jobs)}")
@@ -1365,7 +1223,7 @@ def main(raw_args: Optional[Sequence[str]] = None):
         
         print(fuzzer_names)
         base_dir = args.work_dir / Path("coverage_analysis")
-        plotting(set(fuzzer_names), base_dir=base_dir, plot_crashes=args.crashes, save_format = args.pformat, plot_desciption=plot_desc, fuzzer_colors=fuzzer_colors, annotation_file=args.annotation_file)
+        plotting(set(fuzzer_names), base_dir=base_dir, save_format = args.pformat, plot_desciption=plot_desc, fuzzer_colors=fuzzer_colors, annotation_file=args.annotation_file)
 
     if args.gif:
         gif_up()
