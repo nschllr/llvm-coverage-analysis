@@ -14,7 +14,7 @@ import traceback
 import sys
 from argparse import ArgumentParser, Namespace
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -149,7 +149,7 @@ def check_legacy_afl(afl_version : str) -> bool:
 
     # for afl++ versions
     if "++" in afl_version:
-        re_match: re.Match[str] | None = re.search("[0-9]*\.[0-9]*", afl_version)
+        re_match: re.Match[str] | None = re.search(r"[0-9]*\.[0-9]*", afl_version)
         if re_match is not None:
             stripped_version : float = float(re_match.group(0))
             if stripped_version > 2.52:
@@ -232,7 +232,7 @@ def group_files_by_minute(files : list[Path]):
     file_groups = defaultdict(list)
     for file in files:
         timestamp = extract_timestamp(file)
-        minute = datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M') # type: ignore
+        minute = datetime.fromtimestamp(timestamp, timezone.utc).strftime('%Y-%m-%d %H:%M') # type: ignore
         file_groups[minute].append(file)
         #print(f"Grouping file {file} under minute {minute}")
     return file_groups
@@ -461,7 +461,7 @@ def llvm_cov(working_args, trial: str, base_dir: Path) -> tuple[bool, Path]:
             llvm_profdata_cmd: str = f"llvm-profdata-{llvm_version} merge -sparse {profdata_file} -o {profdata_file_final}"
 
         #print(f"Running command ({trial} - {base_dir.name}): {llvm_profdata_cmd}")
-        print(f"[{jobs_done[0]}/{all_jobs_len}] Processing (merge profdata) ({trial} - {base_dir.name} -- timestamp: {datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M')}): {id}/{len(profdata_files)} -- {round(id / len(profdata_files)*100,2)}%")
+        print(f"[{jobs_done[0]}/{all_jobs_len}] Processing (merge profdata) ({trial} - {base_dir.name} -- timestamp: {datetime.fromtimestamp(timestamp, timezone.utc).strftime('%Y-%m-%d %H:%M')}): {id}/{len(profdata_files)} -- {round(id / len(profdata_files)*100,2)}%")
         
         execute_cmd(llvm_profdata_cmd.split(" "), check = True)
         accuracy_corrected = round(1.0 - accuracy,2)
